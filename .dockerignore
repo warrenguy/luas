@@ -1,14 +1,14 @@
-# Every image under test/integration builds with the repo root as context.
+# Images that build with the repo root as context. The java-jar image builds
+# from its module directory.
 *
 !go.mod
 !go.sum
 !**/*.go
 # go:embed inputs.
 !**/fixtures
-!test/integration/*/pom.xml
-!test/integration/*/src
 !test/integration/*/docker/java
 !bin/aeronmd
+!bin/luas-*.jar
 !test/integration/cluster_java/docker/compose.yaml
 !test/integration/cluster_java/docker/compose.failover.yaml
 # Nested checkouts and local caches would match **/*.go.

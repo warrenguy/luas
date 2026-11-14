@@ -6,7 +6,7 @@ FROM golang:${GO_VERSION} AS builder
 
 WORKDIR /src
 
-COPY . .
+COPY --exclude=bin . .
 
 # Keep ARG below the shared layers: BuildKit keys each later RUN on its value.
 ARG SUITE
@@ -40,16 +40,6 @@ COPY test/integration/cluster_java/docker/compose.yaml \
 	test/integration/cluster_java/docker/compose.failover.yaml \
 	/app/compose/
 
-FROM maven:3.9-eclipse-temurin-26 AS cluster-java-builder
-
-WORKDIR /src
-
-COPY test/integration/cluster_java/pom.xml test/integration/cluster_java/pom.xml
-COPY test/integration/cluster_java/src test/integration/cluster_java/src
-
-RUN --mount=type=cache,target=/root/.m2/repository \
-	mvn -q -f test/integration/cluster_java/pom.xml -DskipTests package
-
 # Java client smoke image. The JRE runs the Java client child process.
 # This stage does not derive from base, so it repeats the base workdir,
 # test binary, and entrypoint.
@@ -57,9 +47,8 @@ FROM eclipse-temurin:26-jre AS java-client-runtime
 
 WORKDIR /app
 
-COPY --from=cluster-java-builder \
-	/src/test/integration/cluster_java/target/luas-cluster-java-*.jar \
-	/app/luas-cluster-java.jar
+# make java-jars builds bin/luas-cluster-java.jar before this image.
+COPY bin/luas-cluster-java.jar /app/luas-cluster-java.jar
 
 ENV LUAS_CLUSTER_JAVA_JAR=/app/luas-cluster-java.jar
 

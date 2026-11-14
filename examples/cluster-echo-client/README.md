@@ -30,6 +30,7 @@ For UDP multi-node clusters with a separate Go `aeronmd`, see
 From repo root:
 
 ```bash
+make bin/luas-cluster-java.jar
 LUAS_COMPOSE_UID=$(id -u) LUAS_COMPOSE_GID=$(id -g) \
 docker compose \
   -f test/integration/cluster_java/docker/compose.yaml \

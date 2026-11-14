@@ -9,6 +9,11 @@ SUBMAKE_J2 = $(if $(filter --jobserver%,$(MAKEFLAGS)),,-j2)
 SUBMAKE_J3 = $(if $(filter --jobserver%,$(MAKEFLAGS)),,-j3)
 SUBMAKE_J4 = $(if $(filter --jobserver%,$(MAKEFLAGS)),,-j4)
 
+# Parallel docker runs print plain log lines, not redrawn TTY progress.
+export BUILDKIT_PROGRESS ?= plain
+export COMPOSE_PROGRESS ?= plain
+export COMPOSE_ANSI ?= never
+
 # Little-endian 64-bit targets only (matches Aeron wire layout on host).
 SUPPORTED_GOARCHES := amd64 arm64
 NATIVE_GOARCH := $(shell env -u GOARCH -u GOOS go env GOARCH)
@@ -36,6 +41,7 @@ COVERAGE_TEST_ARGS = $(if $(COVERAGE_SLICE),-cover -covermode=$(COVERAGE_MODE) \
 
 GO_MODULE := github.com/warrenguy/luas
 GO_TOOL := go tool -modfile=tools/go.mod
+MVN := $(ROOT)/scripts/mvn-retry.sh
 GO_TEST_PKGS := ./...
 # Conductor cross-package test hooks and the test helper packages.
 export UNIT_TEST_TAGS := testhooks
@@ -178,36 +184,20 @@ cluster-sbe-catalog-regen: ## Regenerate cluster SBE catalog.json hex from field
 GOLDEN_FIXTURES_POM := test/integration/golden_fixtures/pom.xml
 
 recordinglog-fixtures-regen: ## Regenerate cluster/recordinglog testdata from Java
-	@command -v mvn >/dev/null || { \
-		echo "luas: mvn required (JDK 26 per $(GOLDEN_FIXTURES_POM))" >&2; \
-		exit 1; \
-	}
 	MAVEN_OPTS='--add-opens java.base/jdk.internal.misc=ALL-UNNAMED' \
-		mvn -q -f $(GOLDEN_FIXTURES_POM) compile exec:java@recordinglog
+		$(MVN) -q -f $(GOLDEN_FIXTURES_POM) compile exec:java@recordinglog
 
 node-state-fixtures-regen: ## Regenerate cluster/election/testdata/node-state from Java
-	@command -v mvn >/dev/null || { \
-		echo "luas: mvn required (JDK 26 per $(GOLDEN_FIXTURES_POM))" >&2; \
-		exit 1; \
-	}
 	MAVEN_OPTS='--add-opens java.base/jdk.internal.misc=ALL-UNNAMED' \
-		mvn -q -f $(GOLDEN_FIXTURES_POM) compile exec:java@node-state
+		$(MVN) -q -f $(GOLDEN_FIXTURES_POM) compile exec:java@node-state
 
 recovery-state-key-fixtures-regen: ## Regenerate cluster/codecs/testdata/recovery-state-key from Java
-	@command -v mvn >/dev/null || { \
-		echo "luas: mvn required (JDK 26 per $(GOLDEN_FIXTURES_POM))" >&2; \
-		exit 1; \
-	}
 	MAVEN_OPTS='--add-opens java.base/jdk.internal.misc=ALL-UNNAMED' \
-		mvn -q -f $(GOLDEN_FIXTURES_POM) compile exec:java@recovery-state-key
+		$(MVN) -q -f $(GOLDEN_FIXTURES_POM) compile exec:java@recovery-state-key
 
 archive-sbe-catalog-regen: ## Regenerate archive SBE catalog.json hex from Java
-	@command -v mvn >/dev/null || { \
-		echo "luas: mvn required (JDK 26 per $(ARCHIVE_SBE_POM))" >&2; \
-		exit 1; \
-	}
 	MAVEN_OPTS='--add-opens java.base/jdk.internal.misc=ALL-UNNAMED' \
-		mvn -q -f $(ARCHIVE_SBE_POM) compile exec:java@catalog
+		$(MVN) -q -f $(ARCHIVE_SBE_POM) compile exec:java@catalog
 
 # Regenerate SBE flyweights and fail on diff vs committed output.
 $(eval $(call sbe-stale-check,,cluster/codecs,clusterwire))
@@ -451,11 +441,7 @@ CONTRACT_ORACLE_SUITES := java-interop cluster-sbe cluster-java archive-java arc
 # Run mvn test for an integration POM; $(1)=logical name, $(2)=pom path.
 define mvn-integration-unit
 test-$(1)-unit:
-	@command -v mvn >/dev/null || { \
-		echo "luas: mvn required (JDK 26 per $(2))" >&2; \
-		exit 1; \
-	}
-	mvn -f $(2) test
+	$(MVN) -f $(2) test
 endef
 
 # Run go oracle test; $(1)=suite, $(2)=timeout, $(3)=tags var (by name; value has commas), $(4)=package.
@@ -493,46 +479,51 @@ DOCKER_SMOKE_TARGETS := $(shell sed -nE 's/^(smoke-[^:[:space:]]+):.*/\1/p' $(la
 	contract-oracles \
 	test-golden-fixtures-unit
 
-smoke-java-interop: aeronmd-compose-image ## Docker smoke: Java/Go IPC duplex
+# Mixed smokes build the cluster and archive Java images.
+CLUSTER_MIXED_SMOKES := $(filter-out smoke-cluster-mixed-service,\
+	$(filter smoke-cluster-mixed-%,$(DOCKER_SMOKE_TARGETS)))
+$(CLUSTER_MIXED_SMOKES): aeronmd-compose-image bin/luas-cluster-java.jar bin/luas-archive-java.jar
+
+smoke-java-interop: aeronmd-compose-image bin/luas-java-interop.jar ## Docker smoke: Java/Go IPC duplex
 	./scripts/java-interop-smoke.sh
 
-smoke-archive-java: aeronmd-compose-image ## Docker smoke: record, recording.log, PlanRecovery, replay, truncate
+smoke-archive-java: aeronmd-compose-image bin/luas-archive-java.jar ## Docker smoke: record, recording.log, PlanRecovery, replay, truncate
 	./scripts/archive-java-smoke.sh
 
-smoke-cluster-java: ## Docker smoke: AsyncConnect + echo roundtrip smoke
+smoke-cluster-java: bin/luas-cluster-java.jar ## Docker smoke: AsyncConnect + echo roundtrip smoke
 	./scripts/cluster-java-smoke.sh
 
-smoke-cluster-java-failover: aeronmd-compose-image ## Docker smoke: 3-node leader failover
+smoke-cluster-java-failover: aeronmd-compose-image bin/luas-cluster-java.jar ## Docker smoke: 3-node leader failover
 	./scripts/cluster-java-failover-smoke.sh
 
-smoke-cluster-mixed-java-leader: aeronmd-compose-image ## Docker smoke: mixed Go/Java, Java appointed leader
+smoke-cluster-mixed-java-leader: ## Docker smoke: mixed Go/Java, Java appointed leader
 	./scripts/cluster-mixed-smoke.sh java-leader
 
-smoke-cluster-mixed-go-leader: aeronmd-compose-image ## Docker smoke: mixed Go/Java, Go appointed leader
+smoke-cluster-mixed-go-leader: ## Docker smoke: mixed Go/Java, Go appointed leader
 	./scripts/cluster-mixed-smoke.sh go-leader
 
-smoke-cluster-mixed-go-leader-unicast: aeronmd-compose-image ## Docker smoke: mixed Go/Java, Go appointed leader, unicast log
+smoke-cluster-mixed-go-leader-unicast: ## Docker smoke: mixed Go/Java, Go appointed leader, unicast log
 	./scripts/cluster-mixed-smoke.sh go-leader-unicast
 
-smoke-cluster-mixed-ex-leader-rejoin: aeronmd-compose-image ## Docker smoke: Go ex-leader rejoins a Java leader
+smoke-cluster-mixed-ex-leader-rejoin: ## Docker smoke: Go ex-leader rejoins a Java leader
 	./scripts/cluster-mixed-smoke.sh ex-leader-rejoin
 
-smoke-cluster-mixed-java-leader-snapshot: aeronmd-compose-image ## Docker smoke: Go member restarts from a Java-led snapshot
+smoke-cluster-mixed-java-leader-snapshot: ## Docker smoke: Go member restarts from a Java-led snapshot
 	./scripts/cluster-mixed-smoke.sh java-leader-snapshot
 
-smoke-cluster-mixed-go-leader-snapshot: aeronmd-compose-image ## Docker smoke: Java member restarts from a Go-led snapshot
+smoke-cluster-mixed-go-leader-snapshot: ## Docker smoke: Java member restarts from a Go-led snapshot
 	./scripts/cluster-mixed-smoke.sh go-leader-snapshot
 
-smoke-cluster-mixed-unappointed-java-majority: aeronmd-compose-image ## Docker smoke: mixed Go/Java, no appointed leader, Java majority
+smoke-cluster-mixed-unappointed-java-majority: ## Docker smoke: mixed Go/Java, no appointed leader, Java majority
 	./scripts/cluster-mixed-smoke.sh unappointed-java-majority
 
-smoke-cluster-mixed-unappointed-go-majority: aeronmd-compose-image ## Docker smoke: mixed Go/Java, no appointed leader, Go majority
+smoke-cluster-mixed-unappointed-go-majority: ## Docker smoke: mixed Go/Java, no appointed leader, Go majority
 	./scripts/cluster-mixed-smoke.sh unappointed-go-majority
 
-smoke-cluster-mixed-go-leader-java-client: aeronmd-compose-image ## Docker smoke: Java client sessions under a Go leader
+smoke-cluster-mixed-go-leader-java-client: ## Docker smoke: Java client sessions under a Go leader
 	./scripts/cluster-mixed-smoke.sh go-leader-java-client
 
-smoke-cluster-mixed-service: ## Docker smoke: mixed Java CM with Go service container
+smoke-cluster-mixed-service: bin/luas-cluster-java.jar ## Docker smoke: mixed Java CM with Go service container
 	./scripts/cluster-mixed-service-smoke.sh
 
 smokes: ## All Docker compose smokes (up to 4 concurrent)
@@ -578,15 +569,26 @@ test-cluster-archive: bin/aeronmd bin/luas-archive-java.jar bin/luas-cluster-jav
 test-linearizability: CLUSTER_ARCHIVE_RUN = ^TestClusterLinearizability_
 test-linearizability: test-cluster-archive ## Live: key-value history across leader faults
 
+JAVA_JAR_DOCKERFILE := test/integration/docker/java-jar/Dockerfile
+
 # $(1)=module dir under test/integration, $(2)=jar stem.
+# Maven runs in a container, so the host needs only Docker.
 define build-java-jar
 bin/$(2).jar: $(shell find test/integration/$(1)/src/main -type f) \
-		test/integration/$(1)/pom.xml scripts/build-java-jar.sh
-	./scripts/build-java-jar.sh $(1) $(2)
+		test/integration/$(1)/pom.xml $(JAVA_JAR_DOCKERFILE) scripts/mvn-retry.sh
+	docker build --build-arg ARTIFACT=$(2) \
+		--build-context scripts=scripts --output type=local,dest=bin \
+		-f $(JAVA_JAR_DOCKERFILE) test/integration/$(1)
+	touch $$@
+JAVA_JARS += bin/$(2).jar
 endef
 
 $(eval $(call build-java-jar,archive_java,luas-archive-java))
 $(eval $(call build-java-jar,cluster_java,luas-cluster-java))
+$(eval $(call build-java-jar,java_interop,luas-java-interop))
+
+.PHONY: java-jars
+java-jars: $(JAVA_JARS) ## Build the Java jars the smokes use
 
 .PHONY: aeronmd-compose-image
 aeronmd-compose-image: bin/aeronmd test/integration/docker/aeronmd/Dockerfile ## Package bin/aeronmd for compose smokes

@@ -3,10 +3,16 @@ description: Install Go. The job sets GOARCH.
 
 inputs:
   java:
-    description: Install Java and Maven.
+    description: Install the JDK.
+    default: "false"
+  maven:
+    description: Install Maven and restore its cache. Needs java.
     default: "false"
   aeronmd:
     description: Restore bin/aeronmd from the cache.
+    default: "false"
+  java-jars:
+    description: Download bin/luas-*.jar from the java-jars job.
     default: "false"
 
 runs:
@@ -30,11 +36,11 @@ runs:
       with:
         distribution: temurin
         java-version: 26
-        cache: maven
+        cache: ${{ inputs.maven == 'true' && 'maven' || '' }}
 
     # setup-java does not install mvn. Pin 3.9.x (Makefile needs 3.8.2+).
     - name: Install Maven
-      if: inputs.java == 'true'
+      if: inputs.maven == 'true'
       shell: bash
       env:
         MAVEN_VERSION: "3.9.16"
@@ -59,3 +65,15 @@ runs:
       if: steps.aeronmd-cache.outputs.cache-hit == 'true'
       shell: bash
       run: touch bin/aeronmd
+
+    - if: inputs.java-jars == 'true'
+      uses: actions/download-artifact@v8
+      with:
+        name: java-jars
+        path: bin
+
+    # Download sets the jar mtimes older than the sources, so make would rebuild.
+    - name: Refresh jar mtimes
+      if: inputs.java-jars == 'true'
+      shell: bash
+      run: touch bin/luas-*.jar
