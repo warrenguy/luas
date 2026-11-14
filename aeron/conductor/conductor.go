@@ -578,7 +578,7 @@ func (conductor *Conductor) buildAndInsertPublication(
 			buildErr = checkPublicationHandle(publication, event.CorrelationID)
 		}
 		if buildErr != nil {
-			conductor.releaseLogBuffersByKey(resolvedLogFileKey, 0)
+			conductor.releaseLogBuffersByKey(resolvedLogFileKey, conductor.config.ResourceLingerNs)
 			return
 		}
 		conductor.insertPublication(event.CorrelationID, publication)

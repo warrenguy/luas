@@ -2,6 +2,7 @@ package conductor
 
 import (
 	"math"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -26,27 +27,32 @@ func validateLingerNs(lingerNs int64) {
 }
 
 type logBufferEntry struct {
-	buffers          *logbuffer.LogBuffers
-	refCount         int32
-	lingerDeadlineNs int64
+	buffers  *logbuffer.LogBuffers
+	refCount int32
 }
 
-func (entry *logBufferEntry) isLingering() bool {
-	return entry.refCount == 0 && entry.lingerDeadlineNs != 0
+type lingeringLogBuffer struct {
+	key        string
+	buffers    *logbuffer.LogBuffers
+	deadlineNs int64
 }
 
-// LogBuffersRegistry is the sole conductor log-buffer map: dedup mmap by absolute
-// path, refCount, and lingerDeadlineNs.
+// LogBuffersRegistry is the sole conductor log-buffer map.
+//
+// Live resources on one log file share one mapping. At zero refCount, the
+// mapping leaves the live map. A positive linger moves it to the lingering
+// list. Acquire never revives a lingering mapping. It maps the file again, so
+// a release never cuts short another mapping's linger.
 //
 // Not thread-safe; mutation must run under Conductor.resourceMu write lock during
 // mutation scopes or close drain.
 type LogBuffersRegistry struct {
 	entries                map[string]*logBufferEntry
+	lingering              []lingeringLogBuffer
 	mediaDriverDir         string
 	resolvedMediaDriverDir string
-	// lingerScheduled counts entries awaiting linger sweep; updated with atomic.Add
-	// under resourceMu write lock. HasScheduledLinger uses atomic.Load for lock-free
-	// reads from service() while other goroutines may drain under write lock.
+	// lingerScheduled mirrors len(lingering). HasScheduledLinger reads it
+	// without resourceMu.
 	lingerScheduled atomic.Int32
 	// unmapper unmaps removed entries off the caller goroutine. Nil unmaps
 	// on the caller goroutine.
@@ -99,9 +105,7 @@ func (registry *LogBuffersRegistry) acquireByKey(key string) (*logbuffer.LogBuff
 
 	entry := registry.entries[key]
 	if entry != nil {
-		registry.decrementLingerScheduled(entry)
 		entry.refCount++
-		entry.lingerDeadlineNs = 0
 		return entry.buffers, nil
 	}
 
@@ -124,11 +128,12 @@ func (registry *LogBuffersRegistry) acquireByKey(key string) (*logbuffer.LogBuff
 	return buffers, nil
 }
 
-// Release decrements the refcount for logFileName. At zero refcount:
-//   - zero lingerNs: Release removes the entry. The unmapper unmaps the log.
-//   - positive lingerNs: SweepLingering removes the entry after the deadline.
+// Release decrements the refcount for logFileName. At zero refcount, the
+// mapping leaves the live map:
+//   - zero lingerNs: the unmapper unmaps the log.
+//   - positive lingerNs: SweepLingering unmaps the log after the deadline.
 //
-// Release ignores an unknown or unresolvable path.
+// Release ignores a path without a live mapping, or one it cannot resolve.
 func (registry *LogBuffersRegistry) Release(logFileName string, lingerNs int64) {
 	registry.releaseAt(logFileName, releaseNowNs(lingerNs), lingerNs)
 }
@@ -171,7 +176,7 @@ func (registry *LogBuffersRegistry) releaseResolvedKeyAt(
 	}
 
 	validateLingerNs(lingerNs)
-	// refCount <= 0 panic is intentional fail-fast during linger, not idempotent.
+
 	if entry.refCount <= 0 {
 		panic("conductor: log buffer release underflow")
 	}
@@ -182,13 +187,18 @@ func (registry *LogBuffersRegistry) releaseResolvedKeyAt(
 		return
 	}
 
+	delete(registry.entries, key)
 	if lingerNs == 0 {
-		registry.deleteEntry(key, entry)
+		registry.unmap(entry.buffers)
 		return
 	}
 
-	entry.lingerDeadlineNs = saturatedLingerDeadlineNs(nowNs, lingerNs)
-	registry.lingerScheduled.Add(1)
+	registry.lingering = append(registry.lingering, lingeringLogBuffer{
+		key:        key,
+		buffers:    entry.buffers,
+		deadlineNs: saturatedLingerDeadlineNs(nowNs, lingerNs),
+	})
+	registry.storeLingerScheduled()
 }
 
 func saturatedLingerDeadlineNs(nowNs, lingerNs int64) int64 {
@@ -198,10 +208,8 @@ func saturatedLingerDeadlineNs(nowNs, lingerNs int64) int64 {
 	return nowNs + lingerNs
 }
 
-func (registry *LogBuffersRegistry) deleteEntry(key string, entry *logBufferEntry) {
-	registry.decrementLingerScheduled(entry)
-	delete(registry.entries, key)
-	if mapped := entry.buffers.MappedLogBuffer(); mapped != nil {
+func (registry *LogBuffersRegistry) unmap(buffers *logbuffer.LogBuffers) {
+	if mapped := buffers.MappedLogBuffer(); mapped != nil {
 		registry.unmapper.unmap(mapped)
 	}
 }
@@ -211,59 +219,62 @@ func (registry *LogBuffersRegistry) stopUnmapper() {
 	registry.unmapper.stop()
 }
 
-// SweepLingering removes each entry whose linger deadline has passed.
+// SweepLingering unmaps each lingering mapping whose deadline has passed.
 // Returns the count.
 func (registry *LogBuffersRegistry) SweepLingering(nowNs int64) int {
 	if registry == nil {
 		return 0
 	}
 
+	kept := registry.lingering[:0]
 	workCount := 0
-	for key, entry := range registry.entries {
-		if !entry.isLingering() || nowNs < entry.lingerDeadlineNs {
+	for _, lingering := range registry.lingering {
+		if nowNs < lingering.deadlineNs {
+			kept = append(kept, lingering)
 			continue
 		}
-		registry.deleteEntry(key, entry)
+
+		registry.unmap(lingering.buffers)
 		workCount++
 	}
+	clear(registry.lingering[len(kept):])
+	registry.lingering = kept
+	registry.storeLingerScheduled()
 	return workCount
 }
 
+// lingerDeadlineNs returns the latest deadline among the lingering mappings
+// of logFileName, or 0.
 func (registry *LogBuffersRegistry) lingerDeadlineNs(logFileName string) int64 {
-	entry := registry.lookupEntry(logFileName)
-	if entry == nil {
+	key, ok := registry.resolveKnownKey(logFileName)
+	if !ok {
 		return 0
 	}
-	return entry.lingerDeadlineNs
+
+	var deadlineNs int64
+	for _, lingering := range registry.lingering {
+		if lingering.key == key {
+			deadlineNs = max(deadlineNs, lingering.deadlineNs)
+		}
+	}
+	return deadlineNs
+}
+
+func (registry *LogBuffersRegistry) resolveKnownKey(logFileName string) (string, bool) {
+	if registry == nil {
+		return "", false
+	}
+
+	key, err := registry.resolveLogFileKey(logFileName)
+	return key, err == nil
 }
 
 func (registry *LogBuffersRegistry) lookupEntry(logFileName string) *logBufferEntry {
-	_, entry, ok := registry.lookupLogFile(logFileName)
-	if !ok || entry == nil {
+	key, ok := registry.resolveKnownKey(logFileName)
+	if !ok {
 		return nil
 	}
-	return entry
-}
-
-func (registry *LogBuffersRegistry) lookupLogFile(
-	logFileName string,
-) (
-	key string,
-	entry *logBufferEntry,
-	ok bool,
-) {
-	if registry == nil {
-		return "", nil, false
-	}
-
-	var err error
-	key, err = registry.resolveLogFileKey(logFileName)
-	if err != nil {
-		return "", nil, false
-	}
-
-	entry, ok = registry.entries[key]
-	return key, entry, ok
+	return registry.entries[key]
 }
 
 func (registry *LogBuffersRegistry) refCount(logFileName string) int32 {
@@ -274,14 +285,23 @@ func (registry *LogBuffersRegistry) refCount(logFileName string) int32 {
 	return entry.refCount
 }
 
+// contains reports whether logFileName holds a live or lingering mapping.
 func (registry *LogBuffersRegistry) contains(logFileName string) bool {
-	return registry.lookupEntry(logFileName) != nil
+	key, ok := registry.resolveKnownKey(logFileName)
+	if !ok {
+		return false
+	}
+
+	if registry.entries[key] != nil {
+		return true
+	}
+	return slices.ContainsFunc(registry.lingering, func(lingering lingeringLogBuffer) bool {
+		return lingering.key == key
+	})
 }
 
-func (registry *LogBuffersRegistry) decrementLingerScheduled(entry *logBufferEntry) {
-	if entry.lingerDeadlineNs != 0 {
-		registry.lingerScheduled.Add(-1)
-	}
+func (registry *LogBuffersRegistry) storeLingerScheduled() {
+	registry.lingerScheduled.Store(int32(len(registry.lingering)))
 }
 
 // HasScheduledLinger reports whether any entry is awaiting linger sweep.
@@ -300,12 +320,5 @@ func (registry *LogBuffersRegistry) countScheduledLingers() int {
 	if registry == nil {
 		return 0
 	}
-
-	count := 0
-	for _, entry := range registry.entries {
-		if entry.isLingering() {
-			count++
-		}
-	}
-	return count
+	return len(registry.lingering)
 }

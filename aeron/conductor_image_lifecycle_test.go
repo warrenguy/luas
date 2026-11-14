@@ -328,6 +328,84 @@ func TestConductor_handleAvailableImage_newImageFailureReleasesLog(t *testing.T)
 	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
 }
 
+func TestConductor_handleAvailableImage_failureOnLingeringLogKeepsLinger(t *testing.T) {
+	t.Parallel()
+
+	const (
+		startNs  = int64(1_000)
+		lingerNs = int64(time.Second)
+	)
+
+	dir, logPath := setupConductorImageLifecycleLogFile(t, "image.log")
+
+	var gotErrors []error
+	nanoNs := startNs
+	conductorInstance := newConductorWithImageLifecycleForTest(
+		t,
+		func(err error) { gotErrors = append(gotErrors, err) },
+		dir,
+		func(config *conductor.Config) {
+			config.NanoClock = func() int64 { return nanoNs }
+			config.ResourceLingerNs = lingerNs
+		},
+	)
+	conductorInstance.SetCountersReaderForTest(subscriberPositionCountersReaderForConductorTest(t))
+	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+
+	registerConductorImageLifecycleSubscriptionForTest(
+		conductorInstance,
+		conductorImageLifecycleGoldenAvailableImage.StreamID,
+	)
+	adapter := conductorInstance.EventsAdapterForTest()
+
+	// Setup: the first image leaves, so its log lingers.
+	transmitConductorImageLifecycleEvent(
+		t,
+		adapter,
+		conductor.OnAvailableImage,
+		conductor.AvailableImageBytes(availableImageEventForConductorTest(logPath)),
+	)
+	require.Equal(t, 1, conductorInstance.DoWork())
+	transmitConductorImageLifecycleEvent(
+		t,
+		adapter,
+		conductor.OnUnavailableImage,
+		conductor.UnavailableImageBytes(conductorImageLifecycleGoldenUnavailableImage),
+	)
+	require.Equal(t, 1, conductorInstance.DoWork())
+	firstDeadline := startNs + lingerNs
+	require.Equal(t, firstDeadline, conductor.LingerDeadlineNsForTest(registry, logPath))
+
+	// Failed attach: an inactive subscriber counter fails a new image on the
+	// same log.
+	nanoNs = startNs + int64(time.Millisecond)
+	event := availableImageEventForConductorTest(logPath)
+	event.CorrelationID++
+	event.SubscriberPositionID = 99
+	transmitConductorImageLifecycleEvent(
+		t,
+		adapter,
+		conductor.OnAvailableImage,
+		conductor.AvailableImageBytes(event),
+	)
+	require.Equal(t, 1, conductorInstance.DoWork())
+	require.Len(t, gotErrors, 1)
+
+	// Each mapping lingers to its own deadline.
+	require.Equal(t, 2, conductor.LogBuffersRegistryCountScheduledLingersForTest(registry))
+
+	nanoNs = firstDeadline - 1
+	require.Zero(t, conductorInstance.DrainLingeringLogBuffers())
+
+	nanoNs = firstDeadline
+	require.Equal(t, 1, conductorInstance.DrainLingeringLogBuffers())
+	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+
+	nanoNs = startNs + int64(time.Millisecond) + lingerNs
+	require.Equal(t, 1, conductorInstance.DrainLingeringLogBuffers())
+	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+}
+
 func TestConductor_handleAvailableImage_acquireFailureReportsError(t *testing.T) {
 	t.Parallel()
 

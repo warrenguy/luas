@@ -408,8 +408,12 @@ func TestConductor_rollbackAddPending_lingersLog(t *testing.T) {
 		conductorInstance *conductor.Conductor,
 		logPath string,
 	) {
-		registerResourceReadySubscriptionPending(t, conductorInstance)
-		transmitResourceReadyAvailableImage(t, conductorInstance, logPath)
+		setupResourceReadySubscriptionWithAvailableImage(
+			t,
+			conductorInstance,
+			conductor.LogBuffersRegistryForTest(conductorInstance),
+			logPath,
+		)
 	}
 	subscriptionFound := func(conductorInstance *conductor.Conductor) bool {
 		_, ok := conductorInstance.SubscriptionByRegID(resourceReadySubscriptionCorrelationID)

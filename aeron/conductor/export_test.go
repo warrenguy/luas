@@ -3,6 +3,7 @@ package conductor
 import (
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -169,8 +170,10 @@ func StopLogBuffersRegistryUnmapperForTest(registry *LogBuffersRegistry) {
 // stops the unmapper. Call it after the test stops reading the buffers.
 func CloseLogBuffersRegistryForTest(registry *LogBuffersRegistry) {
 	for key, entry := range registry.entries {
-		registry.deleteEntry(key, entry)
+		delete(registry.entries, key)
+		registry.unmap(entry.buffers)
 	}
+	registry.SweepLingering(math.MaxInt64)
 	registry.stopUnmapper()
 }
 

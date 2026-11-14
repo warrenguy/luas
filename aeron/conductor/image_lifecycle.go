@@ -88,13 +88,13 @@ func (conductor *Conductor) handleAvailableImage(event AvailableImage) {
 			conductor.config.SubscriberErrorHandler,
 		)
 		if err != nil {
-			conductor.releaseLogBuffersByKey(resolvedLogFileKey, 0)
+			conductor.releaseLogBuffersByKey(resolvedLogFileKey, conductor.config.ResourceLingerNs)
 			return err
 		}
 
 		if !conductor.imageLifecycle.AddImage(sub, image) {
 			conductor.imageLifecycle.CloseImage(image)
-			conductor.releaseLogBuffersByKey(resolvedLogFileKey, 0)
+			conductor.releaseLogBuffersByKey(resolvedLogFileKey, conductor.config.ResourceLingerNs)
 			return errImageAttachFailed
 		}
 
