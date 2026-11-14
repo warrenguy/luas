@@ -84,8 +84,8 @@ func (conductorResourceLifecycle) RetireSubscription(
 	if err != nil {
 		return nil, err
 	}
-	images := subscription.images
-	subscription.images = nil
+	images := subscription.imagesSnapshot()
+	subscription.images.Store(nil)
 
 	registryKeys := make([]string, 0, len(images))
 	for _, image := range images {

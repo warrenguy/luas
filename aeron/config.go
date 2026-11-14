@@ -39,29 +39,34 @@ type Config struct {
 
 	IdleSleepDuration time.Duration
 
-	// ResourceLingerDuration delays the unmap of a log buffer after its
-	// last Publication, Subscription or Image releases it. Nil uses the
-	// default (3s). A pointer to zero starts the unmap at release. A Client
-	// goroutine runs the unmap off the DoWork goroutine. When the unmap queue
-	// is full, the releasing goroutine runs the unmap.
+	// ResourceLingerDuration delays log unmap after the last Publication,
+	// Subscription, or Image releases the log. Nil uses the default, 3s.
+	// A pointer to zero unmaps at release. The log unmapper runs off the
+	// goroutine that runs [Client.DoWork]. When the unmap queue is full, the
+	// releasing goroutine runs the unmap.
 	//
-	// The conductor also releases a log buffer on its own when it terminates
-	// or removes an unavailable Image. The caller cannot order those
-	// releases. Under a zero linger, keep these calls invoker-only:
-	//   - Offer, claim and Poll
-	//   - Position, IsConnected and AvailableWindow
+	// The conductor also releases a log when it terminates or removes an
+	// unavailable Image. The caller cannot order those releases.
 	//
-	// Under a zero linger, commit or abort each claim before the next DoWork.
+	// A call on a Publication, Subscription, or Image that is in flight at
+	// release must return within ResourceLingerDuration. A claim held at
+	// release must commit or abort within that limit. Poll time includes
+	// handler time. A call that starts after release sees the closed flag.
+	// That call does not touch the log.
+	//
+	// With a zero ResourceLingerDuration, run every Publication,
+	// Subscription, and Image call on the goroutine that runs
+	// [Client.DoWork]. Commit or abort each claim before the next DoWork.
 	ResourceLingerDuration *time.Duration
 
-	// ClientCloseLingerDuration is the sleep in Client.Close between resource
-	// close and log buffer unmap. Zero unmaps at once. Zero is the default.
+	// ClientCloseLingerDuration is the sleep in [Client.Close] between
+	// resource close and log unmap. Zero, the default, unmaps at once.
 	// The sleep applies whatever ResourceLingerDuration holds.
 	//
-	// Raise the duration when another goroutine still calls any of these
-	// during Close:
-	//   - Offer, claim or Poll
-	//   - Position, IsConnected or AvailableWindow
+	// A call that touches mapped memory without clientLock must return
+	// before Close starts. Otherwise set ClientCloseLingerDuration longer
+	// than the longest such call. Mapped memory is a log buffer or the CnC
+	// file. Commit or abort each claim before Close.
 	ClientCloseLingerDuration time.Duration
 
 	// PollTimeout bounds resource WaitUntil* and receive poll helpers, plus

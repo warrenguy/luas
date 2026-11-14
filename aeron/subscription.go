@@ -1,44 +1,55 @@
 package aeron
 
 import (
+	"sync/atomic"
+
 	"github.com/warrenguy/luas/aeron/cnc"
 	"github.com/warrenguy/luas/aeron/conductor"
 )
 
-// Subscription manages registration and the image set for one stream.
+// Subscription receives fragments for one channel and stream.
 //
-// Not thread-safe. Must not call Poll or ControlledPoll concurrently with
-// Client.DoWork on the same client, and must not call those methods from
-// multiple goroutines. One goroutine runs Client.DoWork and the poll methods
-// for a given client. Image isClosed uses atomic.Bool for visibility inside
-// poll loops. Subscription closed is a plain bool. Cross-goroutine close
-// visibility for Image alone holds under that single-writer contract.
+// One goroutine at a time polls a Subscription and its images. The poll
+// goroutine need not run [Client.DoWork], unless
+// [Config.ResourceLingerDuration] is zero. [Subscription.Close] and
+// [Subscription.SetUnavailableImageHandler] are safe from any goroutine under
+// the same condition.
 //
-// The conductor alone mutates the images slice via addImage and removeImage.
-// Application code must not modify the slice.
+// Call these methods on the poll goroutine:
+//   - [FragmentAssembler.FreeSessionBuffer]
+//   - [FragmentAssembler.Clear]
+//   - [ControlledFragmentAssembler.FreeSessionBuffer]
+//   - [ControlledFragmentAssembler.Clear]
 //
-// Connect copies image lifecycle callbacks from Config.
-// [Subscription.SetUnavailableImageHandler] may replace the unavailable
-// callback after the subscription is created.
+// An [UnavailableImageHandler] must not free a session buffer the poll
+// goroutine still reads. Check [Image.IsClosed] on the poll goroutine.
+//
+// See [Config.ResourceLingerDuration] and [Config.ClientCloseLingerDuration]
+// for calls in flight when a log unmaps.
+//
+// Connect copies image lifecycle callbacks from [Config].
 type Subscription struct {
 	registrationID int64
 	streamID       int32
 	channel        string
 
-	channelStatusCounterID int32
+	// A lookup can read channelStatusCounterID before the ready event stores it.
+	channelStatusCounterID atomic.Int32
 	counters               *cnc.CountersReader
 
-	images []*Image
+	// images is an immutable []*Image. Writers store a new slice or nil.
+	images atomic.Pointer[[]*Image]
+
+	closed atomic.Bool
+
+	availableImageHandler   AvailableImageHandler
+	unavailableImageHandler atomic.Pointer[UnavailableImageHandler]
+	conductor               *conductor.Conductor
+	client                  *Client
+
 	// roundRobinIndex is the start index for the next pollImages call.
 	// pollImages folds it to 0 when it is at or above the image count.
 	roundRobinIndex int
-
-	closed bool
-
-	availableImageHandler   AvailableImageHandler
-	unavailableImageHandler UnavailableImageHandler
-	conductor               *conductor.Conductor
-	client                  *Client
 
 	// receiveDestinationHook, when non-nil, handles AddDestination and
 	// RemoveDestination in place of the client/driver path. Tests only.
@@ -60,18 +71,19 @@ func newSubscription(
 	available AvailableImageHandler,
 	unavailable UnavailableImageHandler,
 ) *Subscription {
-	return &Subscription{
-		registrationID:          registrationID,
-		streamID:                streamID,
-		channel:                 channel,
-		channelStatusCounterID:  cnc.NullCounterID,
-		availableImageHandler:   available,
-		unavailableImageHandler: unavailable,
+	subscription := &Subscription{
+		registrationID:        registrationID,
+		streamID:              streamID,
+		channel:               channel,
+		availableImageHandler: available,
 	}
+	subscription.channelStatusCounterID.Store(cnc.NullCounterID)
+	subscription.storeUnavailableImageHandler(unavailable)
+	return subscription
 }
 
 func (subscription *Subscription) applySubscriptionReady(channelStatusCounterID int32) {
-	subscription.channelStatusCounterID = channelStatusCounterID
+	subscription.channelStatusCounterID.Store(channelStatusCounterID)
 }
 
 // SetUnavailableImageHandler replaces the unavailable-image callback for this
@@ -81,15 +93,34 @@ func (subscription *Subscription) applySubscriptionReady(channelStatusCounterID 
 // handler. Nil clears the callback. A later call may replace a prior handler.
 // A nil receiver is a silent no-op.
 //
-// Concurrency: invoker-only. Same Client.DoWork restrictions as
-// [UnavailableImageHandler].
+// Concurrency: see [Subscription]. [UnavailableImageHandler] states where
+// the handler runs.
 func (subscription *Subscription) SetUnavailableImageHandler(
 	handler UnavailableImageHandler,
 ) {
 	if subscription == nil {
 		return
 	}
-	subscription.unavailableImageHandler = handler
+	subscription.storeUnavailableImageHandler(handler)
+}
+
+func (subscription *Subscription) storeUnavailableImageHandler(
+	handler UnavailableImageHandler,
+) {
+	if handler == nil {
+		subscription.unavailableImageHandler.Store(nil)
+		return
+	}
+
+	subscription.unavailableImageHandler.Store(&handler)
+}
+
+func (subscription *Subscription) loadUnavailableImageHandler() UnavailableImageHandler {
+	handler := subscription.unavailableImageHandler.Load()
+	if handler == nil {
+		return nil
+	}
+	return *handler
 }
 
 func (subscription *Subscription) RegistrationID() int64 {
@@ -105,19 +136,24 @@ func (subscription *Subscription) Channel() string {
 }
 
 func (subscription *Subscription) ImageCount() int {
-	return len(subscription.images)
+	return len(subscription.imagesSnapshot())
 }
 
-// ImageAt returns the attached image at index when present and not closed.
-// Slice indices are not stable across Client.DoWork; poll or copy fields before the next DoWork.
+// ImageAt returns the image at index when the slot holds an open image.
+//
+// Lifetime: an index holds until the image slice changes. The returned
+// Image outlives that change. [Config.ResourceLingerDuration] bounds use of
+// its mapped bytes.
 func (subscription *Subscription) ImageAt(index int) (*Image, bool) {
-	if subscription.closed {
+	if subscription.closed.Load() {
 		return nil, false
 	}
-	if uint(index) >= uint(len(subscription.images)) {
+
+	images := subscription.imagesSnapshot()
+	if uint(index) >= uint(len(images)) {
 		return nil, false
 	}
-	image := subscription.images[index]
+	image := images[index]
 	if image == nil || image.IsClosed() {
 		return nil, false
 	}
@@ -129,12 +165,12 @@ func (subscription *Subscription) ImageAt(index int) (*Image, bool) {
 //
 // A closed subscription returns nil, false.
 //
-// Concurrency: invoker-only. The call does not take a lock.
+// Concurrency: see [Subscription].
 func (subscription *Subscription) ImageBySessionID(sessionID int32) (*Image, bool) {
-	if subscription.closed {
+	if subscription.closed.Load() {
 		return nil, false
 	}
-	for _, image := range subscription.images {
+	for _, image := range subscription.imagesSnapshot() {
 		if image != nil && !image.IsClosed() && image.SessionID() == sessionID {
 			return image, true
 		}
@@ -142,14 +178,15 @@ func (subscription *Subscription) ImageBySessionID(sessionID int32) (*Image, boo
 	return nil, false
 }
 
-// IsConnected reports whether any non-closed image is attached.
+// IsConnected reports whether any open image is attached.
 //
-// Returns false when the subscription is closed, even if images remain in the slice.
+// Returns false when the subscription is closed, even if images remain in
+// the slice.
 func (subscription *Subscription) IsConnected() bool {
-	if subscription.closed {
+	if subscription.closed.Load() {
 		return false
 	}
-	for _, image := range subscription.images {
+	for _, image := range subscription.imagesSnapshot() {
 		if image != nil && !image.IsClosed() {
 			return true
 		}
@@ -158,41 +195,35 @@ func (subscription *Subscription) IsConnected() bool {
 }
 
 func (subscription *Subscription) IsClosed() bool {
-	return subscription.closed
+	return subscription.closed.Load()
 }
 
-// Poll delivers fragments from attached images using round-robin fairness across
-// a snapshot of the images slice taken at call entry. Images added during the
-// call are excluded; images removed during the call may still be polled from the
-// snapshot. Nil entries in the snapshot are skipped without calling Image.Poll.
+// Poll delivers fragments from attached images in round-robin order. The
+// fragmentLimit budget spans the images in rotation order.
 //
-// The fragmentLimit budget is shared across images in rotation order.
+// Poll reads the image slice at entry. Poll skips an image added during the
+// call. Poll may still read an image removed during the call. A reentrant
+// Close from a fragment handler does not abort the call.
 //
-// Returns 0 when the subscription is closed, without advancing roundRobinIndex.
-// A normal bound Close runs RetireSubscription, which nils images and
-// internalClose's each image immediately; any mmap linger is deferred at the
-// registry layer, not by retaining the images slice. An in-flight Poll keeps
-// only its entry snapshot and is not aborted by a reentrant Close() from a
-// fragment handler.
+// Returns 0 for a closed subscription.
 //
-// Subscription is not thread-safe; see type documentation.
+// Concurrency: see [Subscription].
 func (subscription *Subscription) Poll(handler FragmentHandler, fragmentLimit int) int {
 	return subscription.pollImages(fragmentLimit, func(image *Image, limit int) int {
 		return image.Poll(handler, limit)
 	})
 }
 
-// ControlledPoll delivers fragments from attached images using round-robin
-// fairness, with per-fragment position control via [ControlledFragmentHandler].
+// ControlledPoll delivers fragments from attached images in round-robin
+// order. A [ControlledFragmentHandler] controls the position per fragment.
 //
-// Mirrors [Poll] image snapshot and budget rules. Each image runs
-// [Image.ControlledPoll] with the remaining fragment budget.
-// [ControlledAbort] and [ControlledBreak] stop only the current image's
-// batch; remaining budget still visits later images in the rotation.
+// ControlledPoll follows the image slice and budget rules of
+// [Subscription.Poll]. [ControlledAbort] and [ControlledBreak] stop only the
+// current image's batch. The remaining budget still visits later images.
 //
-// Returns 0 when the subscription is closed, without advancing roundRobinIndex.
+// Returns 0 for a closed subscription.
 //
-// Subscription is not thread-safe; see type documentation.
+// Concurrency: see [Subscription].
 func (subscription *Subscription) ControlledPoll(
 	handler ControlledFragmentHandler,
 	fragmentLimit int,
@@ -213,11 +244,11 @@ func (subscription *Subscription) pollImages(
 	fragmentLimit int,
 	pollImage func(image *Image, limit int) int,
 ) int {
-	if subscription.closed {
+	if subscription.closed.Load() {
 		return 0
 	}
 
-	images := subscription.images
+	images := subscription.imagesSnapshot()
 
 	startingIndex := subscription.roundRobinIndex
 	if uint(startingIndex) >= uint(len(images)) {
@@ -248,8 +279,16 @@ func pollImageRange(
 	return fragmentsRead
 }
 
-func (subscription *Subscription) imageIndexByCorrelationID(correlationID int64) int {
-	for index, image := range subscription.images {
+func (subscription *Subscription) imagesSnapshot() []*Image {
+	images := subscription.images.Load()
+	if images == nil {
+		return nil
+	}
+	return *images
+}
+
+func imageIndexIn(images []*Image, correlationID int64) int {
+	for index, image := range images {
 		if image != nil && image.CorrelationID() == correlationID {
 			return index
 		}
@@ -261,40 +300,50 @@ func (subscription *Subscription) addImage(image *Image) bool {
 	if image == nil {
 		return false
 	}
-	if subscription.imageIndexByCorrelationID(image.CorrelationID()) >= 0 {
+	current := subscription.imagesSnapshot()
+	if imageIndexIn(current, image.CorrelationID()) >= 0 {
 		return false
 	}
-	subscription.images = append(subscription.images, image)
+
+	next := make([]*Image, len(current)+1)
+	copy(next, current)
+	next[len(current)] = image
+	subscription.images.Store(&next)
 	return true
 }
 
 // removeImage splices the image out of the slice.
 //
-// Conductor calls removeImage then Image.internalClose so in-flight Poll snapshots stay valid.
+// The conductor calls removeImage before Image.internalClose, so in-flight
+// Poll snapshots stay valid.
 func (subscription *Subscription) removeImage(correlationID int64) *Image {
-	index := subscription.imageIndexByCorrelationID(correlationID)
+	current := subscription.imagesSnapshot()
+	index := imageIndexIn(current, correlationID)
 	if index < 0 {
 		return nil
 	}
-	image := subscription.images[index]
-	n := len(subscription.images) - 1
-	if n == 0 {
-		subscription.images = nil
+
+	image := current[index]
+
+	if len(current) == 1 {
+		subscription.images.Store(nil)
 		return image
 	}
-	newImages := make([]*Image, n)
-	copy(newImages[:index], subscription.images[:index])
-	copy(newImages[index:], subscription.images[index+1:])
-	subscription.images = newImages
+
+	next := make([]*Image, len(current)-1)
+	copy(next[:index], current[:index])
+	copy(next[index:], current[index+1:])
+	subscription.images.Store(&next)
 	return image
 }
 
-// Close tears down this registration via the bound conductor.
+// Close tears down this registration through the bound conductor.
 //
-// Idempotent: repeated calls return nil. Concurrent Close from multiple
-// goroutines is unsupported. After close, Poll and ControlledPoll return zero.
+// Behaviour: repeated calls return nil.
+//
+// Concurrency: see [Subscription].
 func (subscription *Subscription) Close() error {
-	if subscription.closed {
+	if subscription.closed.Load() {
 		return nil
 	}
 	if subscription.conductor == nil {
@@ -304,6 +353,6 @@ func (subscription *Subscription) Close() error {
 }
 
 func (subscription *Subscription) markClosed() error {
-	subscription.closed = true
+	subscription.closed.Store(true)
 	return nil
 }

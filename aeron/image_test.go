@@ -51,16 +51,21 @@ func TestImage_internalClose_closedSemantics(t *testing.T) {
 	sub := testSubscription(t)
 	image := aeron.NewImageForTest(t, sub, aeron.TestSubscriberPositionAtJoin)
 
-	require.Equal(t, 0, image.Poll(nil, 1))
-
 	const positionAtClose int64 = 256
 	aeron.ImageSetSubscriberPositionForTest(image, positionAtClose)
+
+	aeron.ImageHeaderForTest(image).SetBuffer(aeron.ImageTermBuffer0ForTest(image))
+	termCapacity := aeron.ImageTermBuffer0CapacityForTest(image)
+	headerCapacity := aeron.ImageHeaderBufferCapacityForTest(image)
+	require.Positive(t, termCapacity)
+	require.Positive(t, headerCapacity)
+
 	aeron.ImageInternalCloseForTest(image)
 
 	require.True(t, image.IsClosed())
 	require.Equal(t, positionAtClose, image.Position())
-	require.Zero(t, aeron.ImageTermBuffer0CapacityForTest(image))
-	require.Zero(t, aeron.ImageHeaderBufferCapacityForTest(image))
+	require.Equal(t, termCapacity, aeron.ImageTermBuffer0CapacityForTest(image))
+	require.Equal(t, headerCapacity, aeron.ImageHeaderBufferCapacityForTest(image))
 
 	aeron.ImageSetSubscriberPositionForTest(image, 512)
 	require.Equal(t, positionAtClose, image.Position())

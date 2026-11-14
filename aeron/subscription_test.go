@@ -69,7 +69,7 @@ func TestSubscription_IsConnected_allImagesClosed(t *testing.T) {
 func TestSubscription_ImageAt(t *testing.T) {
 	sub := testSubscription(t)
 	image := addTestImage(t, sub)
-	aeron.SubscriptionInjectNilImageAtIndexForTest(sub, 1)
+	aeron.SubscriptionInjectNilImageAtIndexForHooks(sub, 1)
 
 	got, ok := sub.ImageAt(0)
 	require.True(t, ok)
@@ -150,7 +150,7 @@ func TestSubscription_ImageBySessionID(t *testing.T) {
 
 	t.Run("nilSlot", func(t *testing.T) {
 		sub := testSubscription(t)
-		aeron.SubscriptionInjectNilImageAtIndexForTest(sub, 0)
+		aeron.SubscriptionInjectNilImageAtIndexForHooks(sub, 0)
 		image := add(t, sub, sessionA, 1)
 
 		got, ok := sub.ImageBySessionID(sessionA)
@@ -702,7 +702,7 @@ func TestSubscription_Poll_skipsNilImage(t *testing.T) {
 	sub := testSubscription(t)
 	addSubscriptionPollImage(t, sub, aeron.TestImageCorrelationID, []byte("img0"))
 	addSubscriptionPollImage(t, sub, aeron.TestImageCorrelationID+2, []byte("img2"))
-	aeron.SubscriptionInjectNilImageAtIndexForTest(sub, 1)
+	aeron.SubscriptionInjectNilImageAtIndexForHooks(sub, 1)
 
 	capture := &pollCapture{}
 	requireSubscriptionPoll(t, sub, capture, 2, 2, [][]byte{[]byte("img0"), []byte("img2")})
@@ -810,7 +810,7 @@ func TestSubscription_ControlledPoll_skipsNilImage(t *testing.T) {
 	sub := testSubscription(t)
 	addSubscriptionPollImage(t, sub, aeron.TestImageCorrelationID, []byte("img0"))
 	addSubscriptionPollImage(t, sub, aeron.TestImageCorrelationID+2, []byte("img2"))
-	aeron.SubscriptionInjectNilImageAtIndexForTest(sub, 1)
+	aeron.SubscriptionInjectNilImageAtIndexForHooks(sub, 1)
 
 	capture := &controlledPollCapture{}
 	requireSubscriptionControlledPoll(

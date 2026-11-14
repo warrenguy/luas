@@ -349,7 +349,7 @@ func addSubscriptionPollSlots(tb testing.TB, sub *aeron.Subscription, slots [][]
 
 	for index, payloads := range slots {
 		if payloads == nil {
-			aeron.SubscriptionInjectNilImageAtIndexForTest(sub, index)
+			aeron.SubscriptionInjectNilImageAtIndexForHooks(sub, index)
 			continue
 		}
 		addSubscriptionPollImage(tb, sub, aeron.TestImageCorrelationID+int64(index), payloads...)

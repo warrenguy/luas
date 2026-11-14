@@ -166,12 +166,13 @@ func SubscriptionCountersForHooks(sub *Subscription) *cnc.CountersReader {
 	return sub.counters
 }
 
-// SubscriptionSetReceiveChannelStatusForHooks seeds the receive channel-status counter value.
+// SubscriptionSetReceiveChannelStatusForHooks seeds the receive
+// channel-status counter value.
 func SubscriptionSetReceiveChannelStatusForHooks(sub *Subscription, value int64) {
 	if sub == nil || sub.counters == nil {
 		return
 	}
-	_ = sub.counters.SetCounterValue(sub.channelStatusCounterID, value)
+	_ = sub.counters.SetCounterValue(sub.channelStatusCounterID.Load(), value)
 }
 
 // NewWildcardUDPReceiveCountersForHooks builds receive channel-status and optional
@@ -544,12 +545,21 @@ func NewTestImageForSubscriptionHooksWithSessionID(
 	return image
 }
 
-// SubscriptionInjectNilImageAtIndexForHooks inserts a nil image slot at index.
+// SubscriptionInjectNilImageAtIndexForHooks stores a new image slice with a
+// nil slot at index. index may equal the current length. An out-of-range
+// index or a nil sub does nothing.
 func SubscriptionInjectNilImageAtIndexForHooks(sub *Subscription, index int) {
-	if sub == nil || index < 0 || index > len(sub.images) {
+	if sub == nil {
 		return
 	}
-	sub.images = slices.Insert(sub.images, index, nil)
+
+	current := sub.imagesSnapshot()
+	if index < 0 || index > len(current) {
+		return
+	}
+
+	next := slices.Insert(slices.Clone(current), index, nil)
+	sub.images.Store(&next)
 }
 
 // NewImageWithCommittedDataFrameForHooks returns an image with one committed data frame.
@@ -593,7 +603,7 @@ func SubscriptionUnavailableImageHandlerForHooks(sub *Subscription) UnavailableI
 	if sub == nil {
 		return nil
 	}
-	return sub.unavailableImageHandler
+	return sub.loadUnavailableImageHandler()
 }
 
 // ImageTermBufferForHooks returns the term buffer at partition 0.
@@ -649,7 +659,9 @@ func ImageSetSubscriberPositionForHooks(image *Image, position int64) {
 }
 
 // ImageSetEndOfStreamPositionForHooks writes the end-of-stream word in the
-// image metadata. Call it before Close. A write after Close panics.
+// image metadata. Call it before image close. Close snapshots the word. A
+// later write does not change [Image.IsEndOfStream] or
+// [Image.EndOfStreamPosition]. A write after unmap faults.
 func ImageSetEndOfStreamPositionForHooks(image *Image, position int64) {
 	if image == nil {
 		return

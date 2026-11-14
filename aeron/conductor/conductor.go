@@ -578,7 +578,7 @@ func (conductor *Conductor) buildAndInsertPublication(
 			buildErr = checkPublicationHandle(publication, event.CorrelationID)
 		}
 		if buildErr != nil {
-			conductor.releaseLogBuffersByKey(resolvedLogFileKey, 0)
+			conductor.releaseLogBuffersByKey(resolvedLogFileKey, conductor.config.ResourceLingerNs)
 			return
 		}
 		conductor.insertPublication(event.CorrelationID, publication)
@@ -688,7 +688,7 @@ func (conductor *Conductor) preInsertSubscription(
 // Behaviour:
 //   - A subscription enters the map when the client offers the add. A
 //     publication enters the map when its ready event arrives.
-//   - Releases log buffer references without linger.
+//   - Releases log buffer references with Config.ResourceLingerNs.
 //   - Does not offer REMOVE commands to the driver.
 //
 // A publication is missing from the map when:
@@ -696,6 +696,13 @@ func (conductor *Conductor) preInsertSubscription(
 //   - a bind failure retired the handle
 //   - Close retired the handle
 func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegistration) {
+	conductor.rollbackAddPendingResources(registration, conductor.config.ResourceLingerNs)
+}
+
+func (conductor *Conductor) rollbackAddPendingResources(
+	registration PendingRegistration,
+	lingerNs int64,
+) {
 	if conductor.resourceLifecycle == nil {
 		return
 	}
@@ -710,9 +717,7 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 			if err != nil {
 				conductor.resourceLifecycle.MarkSubscriptionClosed(sub)
 			}
-			for _, registryKey := range registryKeys {
-				conductor.releaseLogBuffersByKey(registryKey, 0)
-			}
+			conductor.releaseLogBuffersByKeys(registryKeys, lingerNs)
 			conductor.removeSubscription(registration.CorrelationID)
 			return err
 
@@ -726,7 +731,7 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 				conductor.resourceLifecycle.MarkPublicationClosed(pub)
 			}
 			if registryKey != "" {
-				conductor.releaseLogBuffersByKey(registryKey, 0)
+				conductor.releaseLogBuffersByKey(registryKey, lingerNs)
 			}
 			conductor.removePublication(registration.CorrelationID)
 			return err

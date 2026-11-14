@@ -258,15 +258,6 @@ func TestLogBuffersRegistry_Release_panics(t *testing.T) {
 		wantPanic string
 	}{
 		{
-			name: "lingerScheduledOverRelease",
-			setup: func(t *testing.T) (*conductor.LogBuffersRegistry, string) {
-				registry, logPath := newRegistryWithAcquiredLog(t, "linger-over-release.log")
-				scheduleLingerForRegistryLog(t, registry, logPath, 1_000_000_000, int64(time.Second))
-				return registry, logPath
-			},
-			wantPanic: releaseUnderflowPanic,
-		},
-		{
 			name: "overRelease",
 			setup: func(t *testing.T) (*conductor.LogBuffersRegistry, string) {
 				return newSeededRegistryWithRefCount(t, "over-release.log", 0)
@@ -352,7 +343,7 @@ func TestLogBuffersRegistry_Release_unknownPath(t *testing.T) {
 	require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
 }
 
-func TestLogBuffersRegistry_lookupLogFile_resolvedKeyOnly(t *testing.T) {
+func TestLogBuffersRegistry_aliasPath_resolvesToKey(t *testing.T) {
 	t.Parallel()
 
 	registry, logPath := newRegistryWithAcquiredLog(t, "shared.log")
@@ -507,7 +498,7 @@ func TestLogBuffersRegistry_Release_lingerSchedulesUnmap(t *testing.T) {
 	assertLingerSweptAt(t, registry, logPath, sweep, deadline)
 }
 
-func TestLogBuffersRegistry_acquireAfterLingerScheduled_cancelsLinger(t *testing.T) {
+func TestLogBuffersRegistry_acquireAfterLingerScheduled_keepsLinger(t *testing.T) {
 	t.Parallel()
 
 	const startNs int64 = 5_000_000_000
@@ -515,15 +506,28 @@ func TestLogBuffersRegistry_acquireAfterLingerScheduled_cancelsLinger(t *testing
 
 	registry, logPath := newRegistryWithAcquiredLog(t, "reacquire.log")
 	scheduleLingerForRegistryLog(t, registry, logPath, startNs, lingerNs)
-	require.NotZero(t, conductor.LingerDeadlineNsForTest(registry, logPath))
+	deadline := conductor.LingerDeadlineNsForTest(registry, logPath)
+	require.NotZero(t, deadline)
 
+	// Release after the linger starts does nothing.
+	registry.Release(logPath, 0)
+	require.Equal(t, deadline, conductor.LingerDeadlineNsForTest(registry, logPath))
+
+	// Acquire maps the file again. The lingering mapping keeps its deadline.
 	_, err := registry.Acquire(logPath)
 	require.NoError(t, err)
 	require.Equal(t, int32(1), conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
-	require.Zero(t, conductor.LingerDeadlineNsForTest(registry, logPath))
+	require.Equal(t, 2, conductor.LogBuffersRegistryEntryCountForTest(registry))
+	require.Equal(t, deadline, conductor.LingerDeadlineNsForTest(registry, logPath))
 
+	// Zero-linger release unmaps only the new mapping.
 	registry.Release(logPath, 0)
-	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+	require.Equal(t, 1, conductor.LogBuffersRegistryEntryCountForTest(registry))
+	require.Equal(t, deadline, conductor.LingerDeadlineNsForTest(registry, logPath))
+
+	sweep := registrySweepForTest(registry)
+	assertLingerRetainedAt(t, registry, logPath, sweep, deadline-1)
+	assertLingerSweptAt(t, registry, logPath, sweep, deadline)
 }
 
 func TestLogBuffersRegistry_lingerScheduled_nilRegistry(t *testing.T) {
@@ -651,11 +655,11 @@ func TestLogBuffersRegistry_lingerScheduledCounter(t *testing.T) {
 	_, err = registry.Acquire(logPath)
 	require.NoError(t, err)
 	assertRegistryLingerScheduledMatchesScan(t, registry)
-	require.Zero(t, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
+	require.Equal(t, 1, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
 
 	registry.Release(logPath, 0)
 	assertRegistryLingerScheduledMatchesScan(t, registry)
-	require.Zero(t, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
+	require.Equal(t, 1, conductor.LogBuffersRegistryLingerScheduledForTest(registry))
 
 	registry, logPath = newRegistryWithAcquiredLog(t, "linger-counter-sweep.log")
 	scheduleLingerForRegistryLog(t, registry, logPath, startNs, lingerNs)

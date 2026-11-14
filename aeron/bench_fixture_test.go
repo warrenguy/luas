@@ -142,7 +142,7 @@ func pollBenchFragment(poll func(FragmentHandler, int) int) (fragments int, deli
 func TestNewInMemSubscriptionForBench_pollDeliversPayload(t *testing.T) {
 	payload := []byte("bench-subscription")
 	sub, image := NewInMemSubscriptionForBench(payload)
-	require.Equal(t, []*Image{image}, sub.images)
+	require.Equal(t, []*Image{image}, sub.imagesSnapshot())
 
 	// First poll: the frame reaches the handler.
 	fragments, delivered := pollBenchFragment(sub.Poll)

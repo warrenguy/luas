@@ -1216,7 +1216,7 @@ func TestConductor_ReleaseLogBuffers_zeroNanoClockAdvance_sweptByDoWork(t *testi
 	require.False(t, registry.HasScheduledLinger())
 }
 
-func TestConductor_acquireAfterLingerScheduled_cancelsLinger(t *testing.T) {
+func TestConductor_acquireAfterLingerScheduled_keepsLinger(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -1235,15 +1235,23 @@ func TestConductor_acquireAfterLingerScheduled_cancelsLinger(t *testing.T) {
 	registry := conductor.LogBuffersRegistryForTest(conductorInstance)
 
 	scheduleLingerForConductorLog(t, conductorInstance, logPath, lingerNs)
-	require.NotZero(t, conductor.LingerDeadlineNsForTest(registry, logPath))
+	deadline := conductor.LingerDeadlineNsForTest(registry, logPath)
+	require.NotZero(t, deadline)
 
 	_, err := conductorInstance.AcquireLogBuffersForTest(logPath)
 	require.NoError(t, err)
 	require.Equal(t, int32(1), conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
-	require.Zero(t, conductor.LingerDeadlineNsForTest(registry, logPath))
+	require.Equal(t, deadline, conductor.LingerDeadlineNsForTest(registry, logPath))
 
 	conductorInstance.ReleaseLogBuffersForTest(logPath, 0)
-	require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+	require.Equal(t, deadline, conductor.LingerDeadlineNsForTest(registry, logPath))
+	assertLingerSweptAt(
+		t,
+		registry,
+		logPath,
+		conductorInstance.SweepLingeringLogBuffersAtForTest,
+		deadline,
+	)
 }
 
 func TestConductor_sweepLingeringLogBuffers_afterDeadline(t *testing.T) {

@@ -1491,18 +1491,16 @@ func SubscriptionRemoveImageForTest(sub *Subscription, correlationID int64) *Ima
 }
 
 func SubscriptionImageAtIndexForTest(sub *Subscription, index int) (*Image, bool) {
-	if uint(index) >= uint(len(sub.images)) {
+	images := sub.imagesSnapshot()
+	if uint(index) >= uint(len(images)) {
 		return nil, false
 	}
-	image := sub.images[index]
+	image := images[index]
 	return image, image != nil
 }
 
-func SubscriptionInjectNilImageAtIndexForTest(sub *Subscription, index int) {
-	if index < 0 || index > len(sub.images) {
-		return
-	}
-	sub.images = slices.Insert(sub.images, index, nil)
+func SubscriptionImagesForTest(sub *Subscription) []*Image {
+	return sub.imagesSnapshot()
 }
 
 func SubscriptionSetRoundRobinIndexForTest(sub *Subscription, index int) {
@@ -1528,7 +1526,7 @@ func SubscriptionRoundRobinIndexForTest(sub *Subscription) int {
 }
 
 func SubscriptionChannelStatusCounterIDForTest(sub *Subscription) int32 {
-	return sub.channelStatusCounterID
+	return sub.channelStatusCounterID.Load()
 }
 
 func SubscriptionApplyReadyForTest(sub *Subscription, channelStatusCounterID int32) {
@@ -1699,5 +1697,5 @@ func SubscriptionAvailableImageHandlerForTest(sub *Subscription) AvailableImageH
 }
 
 func SubscriptionUnavailableImageHandlerForTest(sub *Subscription) UnavailableImageHandler {
-	return sub.unavailableImageHandler
+	return sub.loadUnavailableImageHandler()
 }

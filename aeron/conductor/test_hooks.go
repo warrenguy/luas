@@ -104,7 +104,7 @@ func LogBuffersRegistryForTest(conductor *Conductor) *LogBuffersRegistry {
 }
 
 func LogBuffersRegistryEntryCountForTest(registry *LogBuffersRegistry) int {
-	return len(registry.entries)
+	return len(registry.entries) + len(registry.lingering)
 }
 
 func LogBuffersRegistryRefCountForTest(
