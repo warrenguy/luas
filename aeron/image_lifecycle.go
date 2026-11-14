@@ -22,7 +22,7 @@ func (conductorImageLifecycle) HasImage(
 	if err != nil {
 		return false
 	}
-	return subscription.imageIndexByCorrelationID(correlationID) >= 0
+	return imageIndexIn(subscription.imagesSnapshot(), correlationID) >= 0
 }
 
 func (conductorImageLifecycle) NewImage(
@@ -89,7 +89,7 @@ func (conductorImageLifecycle) UnavailableImageHandler(
 	sub conductor.SubscriptionHandle,
 ) func(conductor.ImageHandle) {
 	return subscriptionImageHandler(sub, func(subscription *Subscription) func(*Image) {
-		return subscription.unavailableImageHandler
+		return subscription.loadUnavailableImageHandler()
 	})
 }
 

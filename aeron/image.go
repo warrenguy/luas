@@ -11,20 +11,12 @@ import (
 	"github.com/warrenguy/luas/atomicbuffer"
 )
 
-// Image is a single session/source over a conductor-mapped log buffer.
+// Image is one session over a conductor-mapped log.
 //
-// Image is not thread-safe. Do not call Poll concurrently with Client.DoWork on
-// the same client, nor from multiple goroutines. Only one goroutine calls
-// Client.DoWork and Image.Poll for a given client. isClosed uses atomic.Bool
-// for visibility when close races Poll, but that does not make Poll safe across
-// goroutines while DoWork may unmap shared log memory. During unavailable-image
-// teardown, Poll on the same client thread may observe isClosed before the
-// conductor releases the shared mmap; cross-goroutine Poll during teardown is
-// unsupported.
+// See [Subscription] for the poll rule.
 //
-// Image does not own the mapped log. Conductor refcounting controls unmap.
-// internalClose clears term and metadata views; retained handles must not read
-// mapped memory after close or log release.
+// Image does not own the mapped log. Closing an Image keeps the term
+// buffer, metadata, and header views.
 type Image struct {
 	subscription   *Subscription
 	correlationID  int64
@@ -622,9 +614,4 @@ func (image *Image) internalClose() {
 	image.endOfStreamPosition = logbuffer.EndOfStreamPositionVolatile(image.metaBuffer)
 	image.isEndOfStream = image.finalPosition >= image.endOfStreamPosition
 	image.isClosed.Store(true)
-	image.logBuffers = nil
-	image.metaBuffer = atomicbuffer.AtomicBuffer{}
-	image.termBuffers = [logbuffer.PartitionCount]atomicbuffer.AtomicBuffer{}
-	image.header.buffer = atomicbuffer.AtomicBuffer{}
-	image.header.offset = 0
 }

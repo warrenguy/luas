@@ -24,19 +24,20 @@ const (
 // with DoWork. Client does not start a conductor goroutine.
 //
 // A Client starts one goroutine when it maps its first log buffer. The
-// goroutine unmaps released log buffers. Close stops it.
+// goroutine unmaps released log buffers. Close stops that goroutine.
 //
-// Concurrency: clientLock admits one call at a time. These calls take it:
+// Concurrency: clientLock admits one call at a time. These calls take
+// clientLock:
 //   - DoWork, Close, and CancelPending
 //   - Add*, OfferAdd*, PollAdd*, and the destination methods
 //   - AddCounter, Counter.Close, NextAvailableSessionID, and PollCommand
 //
 // A call from another goroutine waits until the holder returns. DoWork returns
-// 0 instead of waiting. Close during a blocking call is unsupported. See Close.
+// 0 instead of waiting. Close must not run during a blocking call. See Close.
 //
 // Another goroutine may call Publication Offer when the call does not overlap
-// a blocking call. Subscription and Image Poll stay on the invoker goroutine.
-// See Subscription and Image.
+// a blocking call. One goroutine at a time polls a Subscription and its
+// images. See [Subscription].
 //
 // ErrorHandler, AvailableImageHandler, UnavailableImageHandler, and
 // PublicationErrorFrameHandler run inside DoWork or a blocking call, on the
@@ -51,8 +52,8 @@ const (
 //   - DoWork returns 0. CancelPending returns. Each reports
 //     [ErrReentrantCall] to ErrorHandler.
 //
-// An ErrorHandler on the Close or poll goroutine does not fail fast. Its
-// calls take clientLock like any other caller.
+// An ErrorHandler on the Close or poll goroutine does not fail fast.
+// Calls from that ErrorHandler take clientLock like any other caller.
 //
 // A handler may call IsTerminating, the lookups, offers, polls, and resource
 // Close. These calls do not take clientLock. A handler must not wait for a
@@ -399,20 +400,15 @@ func (client *Client) IsTerminating() bool {
 	return client.terminationConductor.IsTerminating()
 }
 
-// Commit or Abort each claim before Close. Call Close only after these
-// calls have returned:
-//   - Offer, TryClaim and Poll on this Client
-//   - Position, IsConnected and AvailableWindow, which read the log
-//   - ChannelStatus, which reads the CNC file that Close unmaps
-//
-// Poll is invoker-only. Close on the invoker goroutine does not race Poll.
+// Close closes the client resources and unmaps the CnC file. See
+// [Config.ClientCloseLingerDuration] for calls that run during Close.
 //
 // Behaviour: Close is idempotent.
 //
 // Concurrency: callers should not run Close beside another Close or a
 // blocking call. If they do:
 //   - The first Close to win the closed CAS runs teardown under clientLock.
-//     Other Close calls return nil at once. Nil does not mean the CNC file
+//     Other Close calls return nil at once. Nil does not mean the CnC file
 //     is unmapped.
 //   - Close sets closed before it waits on clientLock. A blocking call that
 //     sees closed returns ErrClientClosed, even after a driver answer on the
@@ -421,7 +417,7 @@ func (client *Client) IsTerminating() bool {
 //     add resources. Teardown runs after the blocking call releases
 //     clientLock.
 //
-// Returns the first error from unmapping CNC. Teardown errors go to
+// Returns the first error from unmapping CnC. Teardown errors go to
 // ErrorHandler. A call from a handler on an open client returns
 // [ErrReentrantCall]. The handler call does not close the client.
 func (client *Client) Close() error {

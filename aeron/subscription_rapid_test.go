@@ -56,6 +56,32 @@ func pickCorrelationID(rt *rapid.T, images map[int64]*aeron.Image, name string) 
 	return ids[idx]
 }
 
+// imageSliceSnapshot is one published image slice. Later adds and removes
+// must leave its elements unchanged.
+type imageSliceSnapshot struct {
+	header []*aeron.Image
+	elems  []*aeron.Image
+}
+
+// snapshotSubscriptionImages requires len == cap on the published slice, so a
+// later append cannot write past its length.
+func snapshotSubscriptionImages(t testing.TB, sub *aeron.Subscription) imageSliceSnapshot {
+	t.Helper()
+
+	header := aeron.SubscriptionImagesForTest(sub)
+	require.Len(t, header, cap(header))
+
+	return imageSliceSnapshot{header: header, elems: slices.Clone(header)}
+}
+
+func requireImageSliceUnchanged(t testing.TB, snap imageSliceSnapshot) {
+	t.Helper()
+
+	for index := range snap.elems {
+		require.Same(t, snap.elems[index], snap.header[index])
+	}
+}
+
 func firstOpenImageBySession(order []*aeron.Image, sessionID int32) *aeron.Image {
 	for _, image := range order {
 		if !image.IsClosed() && image.SessionID() == sessionID {
@@ -87,8 +113,14 @@ func TestSubscription_imageMapInvariants_rapid(t *testing.T) {
 			)
 		}
 
+		var published []imageSliceSnapshot
+
 		for step := range opCount {
 			op := drawSubImageOp(rt, step, len(images) > 0, sub.IsClosed())
+			if op == subImageOpAdd || op == subImageOpAddDup || op == subImageOpRemove {
+				published = append(published, snapshotSubscriptionImages(t, sub))
+			}
+
 			countBefore := sub.ImageCount()
 
 			switch op {
@@ -128,6 +160,11 @@ func TestSubscription_imageMapInvariants_rapid(t *testing.T) {
 			}
 
 			require.Equal(rt, len(images), sub.ImageCount())
+
+			for _, snap := range published {
+				requireImageSliceUnchanged(t, snap)
+			}
+
 			closed := sub.IsClosed()
 			wantConnected := !closed && subscriptionHasOpenImage(images)
 			require.Equal(rt, wantConnected, sub.IsConnected())

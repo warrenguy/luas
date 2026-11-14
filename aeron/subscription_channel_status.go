@@ -10,28 +10,34 @@ var errSubscriptionCountersNil = errors.New("aeron: subscription counters view i
 
 // ChannelStatus reads the driver receive-channel-status counter.
 //
-// Subscriptions without a channel-status counter report ChannelEndpointStatusActive.
+// Subscriptions without a channel-status counter report
+// ChannelEndpointStatusActive.
 func (subscription *Subscription) ChannelStatus() (int64, error) {
 	if subscription.IsClosed() {
 		return 0, errors.New("aeron: subscription is closed")
 	}
-	if subscription.channelStatusCounterID == cnc.NullCounterID {
+
+	return subscription.channelStatusFor(subscription.channelStatusCounterID.Load())
+}
+
+func (subscription *Subscription) channelStatusFor(counterID int32) (int64, error) {
+	if counterID == cnc.NullCounterID {
 		return ChannelEndpointStatusActive, nil
 	}
+
 	if subscription.counters == nil {
 		return 0, errSubscriptionCountersNil
 	}
-	return subscription.counters.CounterValue(subscription.channelStatusCounterID)
+	return subscription.counters.CounterValue(counterID)
 }
 
 // TryResolveChannelEndpointPort returns the wire channel URI with an ephemeral
 // endpoint=:0 port resolved from the local socket address counter.
 //
-// Behaviour: channels without endpoint=:0 return the original URI unchanged.
-// control-mode=manual subscription channels carry no endpoint= param, so
-// ChannelEndpointNeedsWildcardPortResolution returns false and this method
-// returns that URI as-is. Wildcard ports inside destination URIs are not
-// resolved here.
+// Behaviour: a channel without endpoint=:0 returns its URI unchanged. A
+// control-mode=manual channel does not carry an endpoint= param, so it also
+// returns unchanged. This method does not resolve a wildcard port inside a
+// destination URI.
 //
 // Returns ("", false) when wildcard resolution is required but the receive
 // endpoint is not yet active.
@@ -45,19 +51,21 @@ func (subscription *Subscription) TryResolveChannelEndpointPort() (string, bool)
 		return channel, true
 	}
 
-	// ChannelStatus treats NullCounterID as Active. Bind resolution needs a real
-	// counter.
-	if subscription.channelStatusCounterID == cnc.NullCounterID {
+	// channelStatusFor reports NullCounterID as active. Bind resolution needs a
+	// real counter.
+	channelStatusCounterID := subscription.channelStatusCounterID.Load()
+	if channelStatusCounterID == cnc.NullCounterID {
 		return "", false
 	}
-	if status, err := subscription.ChannelStatus(); err != nil ||
-		status != ChannelEndpointStatusActive {
+
+	status, err := subscription.channelStatusFor(channelStatusCounterID)
+	if err != nil || status != ChannelEndpointStatusActive {
 		return "", false
 	}
 
 	endpoint, ok := subscription.counters.FindLocalSocketAddress(
 		ChannelEndpointStatusActive,
-		subscription.channelStatusCounterID,
+		channelStatusCounterID,
 	)
 	if !ok {
 		return "", false
