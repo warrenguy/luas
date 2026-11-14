@@ -91,8 +91,8 @@ contract suites and Docker Compose smokes.
 | `smoke-cluster-java` | `scripts/cluster-java-smoke.sh` | Embedded (no image step) |
 | `smoke-cluster-mixed-service` | `scripts/cluster-mixed-service-smoke.sh` | Embedded (no image step) |
 
-Scripts do not build the image. Run `make aeronmd-compose-image` first, or any of the
-Compose-image rows above.
+Scripts do not build the image or the Java jars. Run `make aeronmd-compose-image java-jars`
+first, or the smoke's make target.
 
 **Integration:** `make test-integration` builds `bin/aeronmd` when needed; the harness sets
 `AERON_DIR` per test.

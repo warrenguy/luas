@@ -39,6 +39,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           java: true
+          maven: true
 
       - name: Drift checks and contract oracles
         run: make check-drift check-oracles
@@ -142,8 +143,27 @@ jobs:
           smokes=$(make -s smokes-list | sed 's/^smoke-//' | jq -Rnc '[inputs]')
           echo "smokes=${smokes}" >> "$GITHUB_OUTPUT"
 
+  # Jobs that run the Java jars download them from this one build.
+  java-jars:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env: *amd64-env
+    steps:
+      - *checkout-step
+      - uses: ./.github/actions/setup
+
+      - name: Build smoke Java jars
+        run: make java-jars
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: java-jars
+          path: bin/luas-*.jar
+          if-no-files-found: error
+          retention-days: 1
+
   docker-smokes:
-    needs: docker-smokes-list
+    needs: [docker-smokes-list, java-jars]
     strategy:
       fail-fast: false
       matrix:
@@ -156,11 +176,13 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           aeronmd: true
+          java-jars: true
 
       - name: Docker smoke
         run: make smoke-${{ matrix.smoke }}
 
   cluster-archive:
+    needs: java-jars
     strategy: *go-matrix
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
@@ -171,6 +193,7 @@ jobs:
         with:
           java: true
           aeronmd: true
+          java-jars: true
 
       - name: Live Archive cluster tests
         run: make test-cluster-archive
@@ -185,6 +208,7 @@ jobs:
 
   # A short run on a fixed seed checks that the soak itself still works.
   soak:
+    needs: java-jars
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env: *amd64-env
@@ -194,6 +218,7 @@ jobs:
         with:
           java: true
           aeronmd: true
+          java-jars: true
 
       - name: Prepare namespaces
         run: .github/scripts/prepare-soak-namespaces.sh
@@ -233,7 +258,7 @@ jobs:
 
   ci-ok:
     if: always()
-    needs: [lint, oracles, unit, property, election-sim, replication-sim, integration, docker-smokes, cluster-archive, soak]
+    needs: [lint, oracles, unit, property, election-sim, replication-sim, integration, java-jars, docker-smokes, cluster-archive, soak]
     runs-on: ubuntu-24.04
     steps:
       - *checkout-step
@@ -246,6 +271,7 @@ jobs:
           ELECTION_SIM: ${{ needs.election-sim.result }}
           REPLICATION_SIM: ${{ needs.replication-sim.result }}
           INTEGRATION: ${{ needs.integration.result }}
+          JAVA_JARS: ${{ needs.java-jars.result }}
           DOCKER_SMOKES: ${{ needs.docker-smokes.result }}
           CLUSTER_ARCHIVE: ${{ needs.cluster-archive.result }}
           SOAK: ${{ needs.soak.result }}
@@ -258,6 +284,7 @@ jobs:
           require_job election-sim "${ELECTION_SIM}"
           require_job replication-sim "${REPLICATION_SIM}"
           require_job integration "${INTEGRATION}"
+          require_job java-jars "${JAVA_JARS}"
           require_job docker-smokes "${DOCKER_SMOKES}"
           require_job cluster-archive "${CLUSTER_ARCHIVE}"
           require_job soak "${SOAK}"
