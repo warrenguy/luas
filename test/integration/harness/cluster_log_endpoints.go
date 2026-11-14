@@ -375,15 +375,16 @@ const (
 
 // cluster_archive one-off and smoke endpoints. Harness holds one matrix for
 // every PortBase and log multicast the cluster_archive package uses under
-// t.Parallel. Sibling packages register their blocks in the same ledgers and
-// may run in parallel go test processes.
+// t.Parallel. Sibling packages register their blocks in the same ledgers.
+// Those packages may run in parallel go test processes.
 //
 // TestClusterPortBlocks_doNotOverlap registers every reservation. New
 // cluster_archive bases must end below linuxEphemeralPortFloor.
 //
 // Member counts for reserved unicast ranges:
-//   - consensus, runner, runner archive loss, service snapshot, and module
-//     snapshot: one member (base+1..+5)
+//   - consensus, runner, runner archive loss, runner member service,
+//     runner service start failure, service snapshot, and module snapshot:
+//     one member (base+1..+5)
 //   - member-set smoke and restart affordance: two members (base+1..+105)
 //   - truncate: three members (base+1..+205)
 //
@@ -398,6 +399,12 @@ const (
 
 	RunnerArchiveLossPortBase    = 24900
 	RunnerArchiveLossLogEndpoint = "239.255.12.99:24904"
+
+	RunnerMemberServicePortBase    = 30200
+	RunnerMemberServiceLogEndpoint = "239.255.12.109:30204"
+
+	RunnerServiceStartFailurePortBase    = 30300
+	RunnerServiceStartFailureLogEndpoint = "239.255.12.111:30304"
 
 	ClusterMemberSmokePortBase    = 25300
 	ClusterMemberSmokeLogEndpoint = "239.255.12.9:25304"
@@ -645,6 +652,18 @@ func multicastPortLedger() []portLedgerBlock {
 			portBase:    RunnerArchiveLossPortBase,
 			memberCount: 1,
 			logEndpoint: RunnerArchiveLossLogEndpoint,
+		},
+		{
+			name:        "runner-member-service",
+			portBase:    RunnerMemberServicePortBase,
+			memberCount: 1,
+			logEndpoint: RunnerMemberServiceLogEndpoint,
+		},
+		{
+			name:        "runner-service-start-failure",
+			portBase:    RunnerServiceStartFailurePortBase,
+			memberCount: 1,
+			logEndpoint: RunnerServiceStartFailureLogEndpoint,
 		},
 		{
 			name:        "module-elect",

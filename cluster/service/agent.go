@@ -673,6 +673,11 @@ func (a *Agent) MemberID() int32 {
 	return a.memberID
 }
 
+// ServiceID returns [AgentConfig.ServiceID].
+func (a *Agent) ServiceID() int32 {
+	return a.serviceID
+}
+
 // LogPosition returns the last consumed frame-end position, including padding
 // adoption on unbind or at a termination position. A recovery load in [Open]
 // seeds it.
