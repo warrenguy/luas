@@ -386,6 +386,7 @@ func TestAgent_Close_idempotent(t *testing.T) {
 
 func TestAgent_NewAgent_sentinels(t *testing.T) {
 	agent := NewAgent(AgentConfig{})
+	require.Equal(t, int32(0), agent.ServiceID())
 	require.Equal(t, int32(-1), agent.MemberID())
 	require.Equal(t, int64(0), agent.LogPosition())
 	require.Equal(t, codecs.RoleFollower, agent.Role())
@@ -394,6 +395,9 @@ func TestAgent_NewAgent_sentinels(t *testing.T) {
 	require.NoError(t, agent.ServiceFailure())
 	require.Equal(t, nullValue, agent.egressLeadershipTermID)
 	require.Equal(t, 0, agent.ResponsePublicationCount())
+
+	other := NewAgent(AgentConfig{ServiceID: 3})
+	require.Equal(t, int32(3), other.ServiceID())
 }
 
 func TestAgent_DoWork_pollsArchive(t *testing.T) {

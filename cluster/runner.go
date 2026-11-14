@@ -3,6 +3,8 @@ package cluster
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 
 	"github.com/warrenguy/luas/aeron"
 	"github.com/warrenguy/luas/archive"
@@ -10,19 +12,18 @@ import (
 	"github.com/warrenguy/luas/idlestrategy"
 )
 
-// ErrTransportTerminating reports that [Runner.Run] stopped because the
-// transport client entered termination.
+// ErrTransportTerminating reports that [Runner.Run] or
+// [Runner.RunWithServices] stopped because the transport client entered
+// termination.
 //
 // Causes:
 //   - media-driver shutdown
 //   - stale keepalive
 //   - client or service timeout
 //
-// [Runner.Run] returns this sentinel, not a context error. A caller can
-// distinguish a requested stop from a lost transport.
+// The sentinel is not a context error.
 //
-// A closed client does not produce this sentinel. A closed client reports no
-// termination.
+// A closed client does not produce this sentinel.
 var ErrTransportTerminating = errors.New("cluster: transport client is terminating")
 
 // transportInvoker is the transport half of one duty tick.
@@ -48,6 +49,29 @@ func (noArchiveInvoker) Poll() int { return 0 }
 type agentInvoker interface {
 	DoWork(nowNs int64) int
 	TerminationError() error
+	SetServiceLiveness(serviceID int32, source consensus.ServiceLiveness) error
+}
+
+// ServiceAgent is one co-hosted clustered service.
+//
+// *service.Agent satisfies ServiceAgent.
+//
+// The service must use [RunnerDeps.Client]. [Runner.RunWithServices] does
+// not tick another transport client.
+type ServiceAgent interface {
+	consensus.ServiceLiveness
+	ServiceID() int32
+	DoWork(nowNs int64) int
+}
+
+// serviceFailureGraceNs is the wait after the first service failure. The
+// wait spans ten slow tick intervals.
+const serviceFailureGraceNs int64 = 100_000_000
+
+// serviceFailureWatch holds the service-failure deadline for one run.
+type serviceFailureWatch struct {
+	seen     bool
+	deadline int64
 }
 
 // RunnerDeps are the collaborators [NewRunner] needs.
@@ -55,8 +79,8 @@ type agentInvoker interface {
 // Named for [ConsensusModuleDeps] and [RecoveryDeps], which carry injected
 // collaborators the same way.
 //
-// Ownership: every field is borrowed. [Runner] does not own them. [Runner]
-// closes none of them. [Runner] outlives none of them.
+// Ownership: [Runner] borrows every field. [Runner] does not close them.
+// [Runner] does not outlive them.
 type RunnerDeps struct {
 	// Client is the transport client whose conductor the duty cycle services.
 	// Required. Pass ConsensusModule.Client.
@@ -74,7 +98,8 @@ type RunnerDeps struct {
 	// drive the agent without an Archive.
 	Archive *archive.Client
 
-	// Idle paces [Runner.Run]. Nil takes idlestrategy.NewDefaultBackoff.
+	// Idle paces [Runner.Run] and [Runner.RunWithServices]. A nil Idle takes
+	// idlestrategy.NewDefaultBackoff.
 	//
 	// A strategy carries per-loop state. Strategies are not safe to share.
 	// Every Runner must use its own strategy.
@@ -84,16 +109,17 @@ type RunnerDeps struct {
 	// value, or when Idle stays nil and Config.Normalize fills it.
 	Idle idlestrategy.IdleStrategy
 
-	// Clock reads nanoseconds for Agent.DoWork. Required. Not defaulted.
-	// Agent deadlines and election deadlines must share one function. Pass
-	// ConsensusModule.NanoClock.
+	// Clock reads nanoseconds for Agent.DoWork and each service DoWork.
+	// Required. Agent deadlines and election deadlines must share one
+	// function. Pass ConsensusModule.NanoClock.
 	Clock func() int64
 }
 
 // Runner drives one consensus member's duty cycle on the calling goroutine.
 //
 // Build with [NewRunner]. Drive one tick with [Runner.DoWork]. Drive the
-// loop with [Runner.Run].
+// member loop with [Runner.Run]. Drive the member and its services with
+// [Runner.RunWithServices].
 //
 //	module, err := cluster.OpenConsensusModule(ctx, deps)
 //	if err != nil {
@@ -112,15 +138,15 @@ type RunnerDeps struct {
 //	}
 //	return runner.Run(ctx)
 //
-// A co-hosted service opens after the module. Pass its id and agent to
-// [consensus.Agent.SetServiceLiveness]. Each tick, call [Runner.DoWork], then
-// the service agent's DoWork, on one goroutine. [Runner.Run] does not tick the
-// service.
+// Without [Runner.RunWithServices], set each liveness source with
+// [consensus.Agent.SetServiceLiveness]. Each tick, call [Runner.DoWork]. Then
+// call each service DoWork on the same goroutine.
 //
-// Behaviour: [ConsensusModule.Close] does not stop [Runner.Run]. With a closed
-// transport client, Run calls Idle(0) until the context ends. Run returns
-// [consensus.TerminationError] after one tick when the member ends before
-// Close.
+// Behaviour: [ConsensusModule.Close] does not stop [Runner.Run] or
+// [Runner.RunWithServices]. A closed transport client does not stop either
+// loop. [Runner.Run] then calls Idle(0) until the context ends. Each loop
+// returns [consensus.TerminationError] after one tick when the member ends
+// before Close.
 //
 // Stop the duty cycle before closing the module. Do not reuse a Runner across a
 // close.
@@ -234,19 +260,158 @@ func (r *Runner) DoWork() int {
 // Run resets the idle strategy on return. Run does not close or drain any
 // collaborator. Close the module after Run returns.
 func (r *Runner) Run(ctx context.Context) error {
+	return r.run(ctx, nil)
+}
+
+// RunWithServices pumps the member and each service on the calling goroutine.
+//
+// Before the first tick, RunWithServices sets each service as the liveness
+// source for its ServiceID. A source already set for that id is replaced.
+// RunWithServices does not clear those slots on return.
+//
+// Each tick runs [Runner.DoWork], then each service DoWork in argument order.
+// The services share one fresh [RunnerDeps.Clock] read.
+//
+// Returns:
+//   - a start error when an entry is nil, two entries share a ServiceID, or
+//     [consensus.Agent.SetServiceLiveness] fails
+//   - ctx.Err when ctx is done
+//   - [ErrTransportTerminating] when the transport client enters termination.
+//     The transport end wins over a member end in that tick.
+//   - the agent's [consensus.TerminationError], unchanged, when the member
+//     terminates. The member end wins over a service failure in that tick.
+//   - "cluster: service %d: %w" when a service failure outlasts a 100ms wait
+//     while the member still runs. The lowest failing ServiceID wins. A tick
+//     with no failure resets the wait. IsTerminated alone does not stop the
+//     loop.
+//
+// RunWithServices resets the idle strategy on return. Close each service
+// after the call returns. Then close the module.
+//
+// Concurrency: a service callback must not call [Runner.DoWork],
+// [Runner.Run], a service DoWork, or Close on its agent or its container.
+// Other goroutines may set a control toggle.
+func (r *Runner) RunWithServices(ctx context.Context, services ...ServiceAgent) error {
+	if err := r.wireServices(services); err != nil {
+		return err
+	}
+	return r.run(ctx, services)
+}
+
+func (r *Runner) wireServices(services []ServiceAgent) error {
+	for i, svc := range services {
+		if svc == nil {
+			return fmt.Errorf("cluster: service at index %d is nil", i)
+		}
+	}
+
+	for i, svc := range services {
+		id := svc.ServiceID()
+
+		for j := i + 1; j < len(services); j++ {
+			if services[j].ServiceID() == id {
+				return fmt.Errorf("cluster: service id %d repeats", id)
+			}
+		}
+	}
+
+	for _, svc := range services {
+		err := r.agent.SetServiceLiveness(svc.ServiceID(), svc)
+		if err != nil {
+			return fmt.Errorf("cluster: set service liveness: %w", err)
+		}
+	}
+	return nil
+}
+
+func (r *Runner) run(ctx context.Context, services []ServiceAgent) error {
 	defer r.idle.Reset()
+
+	var watch serviceFailureWatch
 
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		work := r.DoWork()
-		if r.client.IsTerminating() {
-			return ErrTransportTerminating
-		}
-		if err := r.agent.TerminationError(); err != nil {
+
+		work, err := r.tick(services, &watch)
+		if err != nil {
 			return err
 		}
+
 		r.idle.Idle(work)
 	}
+}
+
+// tick runs one duty tick. tick then applies the transport, member, and
+// service-failure checks.
+func (r *Runner) tick(services []ServiceAgent, watch *serviceFailureWatch) (int, error) {
+	work := r.DoWork()
+
+	if len(services) == 0 {
+		return work, r.stopAfterMember()
+	}
+
+	nowNs := r.clock()
+
+	for _, svc := range services {
+		work += svc.DoWork(nowNs)
+	}
+
+	err := r.stopAfterMember()
+	if err != nil {
+		return work, err
+	}
+	return work, watch.stop(services, nowNs)
+}
+
+func (r *Runner) stopAfterMember() error {
+	if r.client.IsTerminating() {
+		return ErrTransportTerminating
+	}
+	return r.agent.TerminationError()
+}
+
+func (watch *serviceFailureWatch) stop(services []ServiceAgent, nowNs int64) error {
+	id, failure := lowestServiceFailure(services)
+	if failure == nil {
+		watch.seen = false
+		return nil
+	}
+
+	if !watch.seen {
+		watch.seen = true
+		watch.deadline = serviceFailureDeadline(nowNs)
+		return nil
+	}
+
+	if nowNs < watch.deadline {
+		return nil
+	}
+	return fmt.Errorf("cluster: service %d: %w", id, failure)
+}
+
+func lowestServiceFailure(services []ServiceAgent) (int32, error) {
+	var id int32
+	var failure error
+
+	for _, svc := range services {
+		next := svc.ServiceFailure()
+		if next == nil {
+			continue
+		}
+
+		nextID := svc.ServiceID()
+		if failure == nil || nextID < id {
+			id, failure = nextID, next
+		}
+	}
+	return id, failure
+}
+
+func serviceFailureDeadline(nowNs int64) int64 {
+	if nowNs > math.MaxInt64-serviceFailureGraceNs {
+		return math.MaxInt64
+	}
+	return nowNs + serviceFailureGraceNs
 }
