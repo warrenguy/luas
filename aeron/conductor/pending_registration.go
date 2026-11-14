@@ -372,22 +372,25 @@ func (conductor *Conductor) CancelPending(correlationID int64) {
 }
 
 func (conductor *Conductor) ClearPending() {
-	conductor.clearPendingEntries()
+	conductor.clearPendingEntries(conductor.config.ResourceLingerNs)
 	conductor.activeCorrelationID = NullCorrelationID
 }
 
 // ClearPendingEntriesForClose rolls back in-flight add pendings during client
 // teardown. Does not clear activeCorrelationID so unsupported concurrent readers
 // of ActiveCorrelationID during Close do not race with teardown.
+//
+// Released logs stay mapped until UnmapLingeringLogBuffers, as in
+// CloseAllResources.
 func (conductor *Conductor) ClearPendingEntriesForClose() {
-	conductor.clearPendingEntries()
+	conductor.clearPendingEntries(untilUnmapLingerNs)
 }
 
 // clearPendingEntries rolls back and removes all pending registrations and clears
 // receivedCorrelationID. Does not clear activeCorrelationID.
-func (conductor *Conductor) clearPendingEntries() {
+func (conductor *Conductor) clearPendingEntries(lingerNs int64) {
 	conductor.pending.ClearEach(func(registration PendingRegistration) {
-		conductor.RollbackAddPendingResources(registration)
+		conductor.rollbackAddPendingResources(registration, lingerNs)
 	})
 	conductor.receivedCorrelationID = NullCorrelationID
 }

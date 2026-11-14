@@ -545,9 +545,21 @@ func NewTestImageForSubscriptionHooksWithSessionID(
 	return image
 }
 
-// SubscriptionInjectNilImageAtIndexForHooks inserts a nil image slot at index.
+// SubscriptionInjectNilImageAtIndexForHooks stores a new image slice with a
+// nil slot at index. index may equal the current length. An out-of-range
+// index or a nil sub does nothing.
 func SubscriptionInjectNilImageAtIndexForHooks(sub *Subscription, index int) {
-	sub.insertNilImageAt(index)
+	if sub == nil {
+		return
+	}
+
+	current := sub.imagesSnapshot()
+	if index < 0 || index > len(current) {
+		return
+	}
+
+	next := slices.Insert(slices.Clone(current), index, nil)
+	sub.images.Store(&next)
 }
 
 // NewImageWithCommittedDataFrameForHooks returns an image with one committed data frame.

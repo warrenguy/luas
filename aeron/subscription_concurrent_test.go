@@ -159,6 +159,7 @@ func (fixture *subscriptionChurnFixture) pollUntilStopped(closeFromPoll bool) {
 func (fixture *subscriptionChurnFixture) swapUnavailableImageHandlerUntilStopped() {
 	handlers := []UnavailableImageHandler{nil, func(*Image) {}}
 	var turn int
+
 	for {
 		select {
 		case <-fixture.stop:

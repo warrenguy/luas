@@ -1503,10 +1503,6 @@ func SubscriptionImagesForTest(sub *Subscription) []*Image {
 	return sub.imagesSnapshot()
 }
 
-func SubscriptionInjectNilImageAtIndexForTest(sub *Subscription, index int) {
-	sub.insertNilImageAt(index)
-}
-
 func SubscriptionSetRoundRobinIndexForTest(sub *Subscription, index int) {
 	sub.roundRobinIndex = index
 }

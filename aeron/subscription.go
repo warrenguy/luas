@@ -12,7 +12,8 @@ import (
 // One goroutine at a time polls a Subscription and its images. The poll
 // goroutine need not run [Client.DoWork], unless
 // [Config.ResourceLingerDuration] is zero. [Subscription.Close] and
-// [Subscription.SetUnavailableImageHandler] are safe from any goroutine.
+// [Subscription.SetUnavailableImageHandler] are safe from any goroutine under
+// the same condition.
 //
 // Call these methods on the poll goroutine:
 //   - [FragmentAssembler.FreeSessionBuffer]
@@ -39,16 +40,16 @@ type Subscription struct {
 	// images is an immutable []*Image. Writers store a new slice or nil.
 	images atomic.Pointer[[]*Image]
 
-	// roundRobinIndex is the start index for the next pollImages call.
-	// pollImages folds it to 0 when it is at or above the image count.
-	roundRobinIndex int
-
 	closed atomic.Bool
 
 	availableImageHandler   AvailableImageHandler
 	unavailableImageHandler atomic.Pointer[UnavailableImageHandler]
 	conductor               *conductor.Conductor
 	client                  *Client
+
+	// roundRobinIndex is the start index for the next pollImages call.
+	// pollImages folds it to 0 when it is at or above the image count.
+	roundRobinIndex int
 
 	// receiveDestinationHook, when non-nil, handles AddDestination and
 	// RemoveDestination in place of the client/driver path. Tests only.
@@ -147,6 +148,7 @@ func (subscription *Subscription) ImageAt(index int) (*Image, bool) {
 	if subscription.closed.Load() {
 		return nil, false
 	}
+
 	images := subscription.imagesSnapshot()
 	if uint(index) >= uint(len(images)) {
 		return nil, false
@@ -333,24 +335,6 @@ func (subscription *Subscription) removeImage(correlationID int64) *Image {
 	copy(next[index:], current[index+1:])
 	subscription.images.Store(&next)
 	return image
-}
-
-// insertNilImageAt stores a new slice with a nil slot at index. index may
-// equal the current length.
-func (subscription *Subscription) insertNilImageAt(index int) {
-	if subscription == nil {
-		return
-	}
-
-	current := subscription.imagesSnapshot()
-	if index < 0 || index > len(current) {
-		return
-	}
-
-	next := make([]*Image, len(current)+1)
-	copy(next[:index], current[:index])
-	copy(next[index+1:], current[index:])
-	subscription.images.Store(&next)
 }
 
 // Close tears down this registration through the bound conductor.

@@ -53,7 +53,7 @@ type LogBuffersRegistry struct {
 	resolvedMediaDriverDir string
 	// lingerScheduled mirrors len(lingering). HasScheduledLinger reads it
 	// without resourceMu.
-	lingerScheduled atomic.Int32
+	lingerScheduled atomic.Int64
 	// unmapper unmaps removed entries off the caller goroutine. Nil unmaps
 	// on the caller goroutine.
 	unmapper *logBufferUnmapper
@@ -188,6 +188,7 @@ func (registry *LogBuffersRegistry) releaseResolvedKeyAt(
 	}
 
 	delete(registry.entries, key)
+
 	if lingerNs == 0 {
 		registry.unmap(entry.buffers)
 		return
@@ -228,6 +229,7 @@ func (registry *LogBuffersRegistry) SweepLingering(nowNs int64) int {
 
 	kept := registry.lingering[:0]
 	workCount := 0
+
 	for _, lingering := range registry.lingering {
 		if nowNs < lingering.deadlineNs {
 			kept = append(kept, lingering)
@@ -237,6 +239,7 @@ func (registry *LogBuffersRegistry) SweepLingering(nowNs int64) int {
 		registry.unmap(lingering.buffers)
 		workCount++
 	}
+
 	clear(registry.lingering[len(kept):])
 	registry.lingering = kept
 	registry.storeLingerScheduled()
@@ -252,6 +255,7 @@ func (registry *LogBuffersRegistry) lingerDeadlineNs(logFileName string) int64 {
 	}
 
 	var deadlineNs int64
+
 	for _, lingering := range registry.lingering {
 		if lingering.key == key {
 			deadlineNs = max(deadlineNs, lingering.deadlineNs)
@@ -301,7 +305,7 @@ func (registry *LogBuffersRegistry) contains(logFileName string) bool {
 }
 
 func (registry *LogBuffersRegistry) storeLingerScheduled() {
-	registry.lingerScheduled.Store(int32(len(registry.lingering)))
+	registry.lingerScheduled.Store(int64(len(registry.lingering)))
 }
 
 // HasScheduledLinger reports whether any entry is awaiting linger sweep.

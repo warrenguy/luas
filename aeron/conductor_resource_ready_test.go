@@ -2,6 +2,7 @@ package aeron
 
 import (
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -426,6 +427,8 @@ func TestConductor_rollbackAddPending_lingersLog(t *testing.T) {
 		setup         func(*testing.T, *conductor.Conductor, string)
 		rollback      func(*testing.T, *conductor.Conductor, int64, *int64)
 		found         func(*conductor.Conductor) bool
+		// untilUnmap: the log stays mapped until UnmapLingeringLogBuffers.
+		untilUnmap bool
 	}{
 		{
 			name:          "subscriptionCancelAfterReadyTick",
@@ -479,6 +482,16 @@ func TestConductor_rollbackAddPending_lingersLog(t *testing.T) {
 			found: subscriptionFound,
 		},
 		{
+			name:          "subscriptionClearForClose",
+			correlationID: resourceReadySubscriptionCorrelationID,
+			setup:         subscriptionWithImage,
+			rollback: func(_ *testing.T, conductorInstance *conductor.Conductor, _ int64, _ *int64) {
+				conductorInstance.ClearPendingEntriesForClose()
+			},
+			found:      subscriptionFound,
+			untilUnmap: true,
+		},
+		{
 			name:          "publicationCancelAfterReadyTick",
 			correlationID: resourceReadyPublicationCorrelationID,
 			setup: func(t *testing.T, conductorInstance *conductor.Conductor, logPath string) {
@@ -517,11 +530,12 @@ func TestConductor_rollbackAddPending_lingersLog(t *testing.T) {
 			require.False(t, tc.found(conductorInstance))
 			require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
 			require.Zero(t, conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
-			require.Equal(
-				t,
-				nanoNs+lingerNs,
-				conductor.LingerDeadlineNsForTest(registry, logPath),
-			)
+
+			wantDeadlineNs := nanoNs + lingerNs
+			if tc.untilUnmap {
+				wantDeadlineNs = math.MaxInt64
+			}
+			require.Equal(t, wantDeadlineNs, conductor.LingerDeadlineNsForTest(registry, logPath))
 		})
 	}
 }

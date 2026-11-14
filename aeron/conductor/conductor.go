@@ -696,6 +696,13 @@ func (conductor *Conductor) preInsertSubscription(
 //   - a bind failure retired the handle
 //   - Close retired the handle
 func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegistration) {
+	conductor.rollbackAddPendingResources(registration, conductor.config.ResourceLingerNs)
+}
+
+func (conductor *Conductor) rollbackAddPendingResources(
+	registration PendingRegistration,
+	lingerNs int64,
+) {
 	if conductor.resourceLifecycle == nil {
 		return
 	}
@@ -710,7 +717,7 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 			if err != nil {
 				conductor.resourceLifecycle.MarkSubscriptionClosed(sub)
 			}
-			conductor.releaseLogBuffersByKeys(registryKeys, conductor.config.ResourceLingerNs)
+			conductor.releaseLogBuffersByKeys(registryKeys, lingerNs)
 			conductor.removeSubscription(registration.CorrelationID)
 			return err
 
@@ -724,7 +731,7 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 				conductor.resourceLifecycle.MarkPublicationClosed(pub)
 			}
 			if registryKey != "" {
-				conductor.releaseLogBuffersByKey(registryKey, conductor.config.ResourceLingerNs)
+				conductor.releaseLogBuffersByKey(registryKey, lingerNs)
 			}
 			conductor.removePublication(registration.CorrelationID)
 			return err
