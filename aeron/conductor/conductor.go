@@ -688,7 +688,7 @@ func (conductor *Conductor) preInsertSubscription(
 // Behaviour:
 //   - A subscription enters the map when the client offers the add. A
 //     publication enters the map when its ready event arrives.
-//   - Releases log buffer references without linger.
+//   - Releases log buffer references with Config.ResourceLingerNs.
 //   - Does not offer REMOVE commands to the driver.
 //
 // A publication is missing from the map when:
@@ -710,9 +710,7 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 			if err != nil {
 				conductor.resourceLifecycle.MarkSubscriptionClosed(sub)
 			}
-			for _, registryKey := range registryKeys {
-				conductor.releaseLogBuffersByKey(registryKey, 0)
-			}
+			conductor.releaseLogBuffersByKeys(registryKeys, conductor.config.ResourceLingerNs)
 			conductor.removeSubscription(registration.CorrelationID)
 			return err
 
@@ -726,7 +724,7 @@ func (conductor *Conductor) RollbackAddPendingResources(registration PendingRegi
 				conductor.resourceLifecycle.MarkPublicationClosed(pub)
 			}
 			if registryKey != "" {
-				conductor.releaseLogBuffersByKey(registryKey, 0)
+				conductor.releaseLogBuffersByKey(registryKey, conductor.config.ResourceLingerNs)
 			}
 			conductor.removePublication(registration.CorrelationID)
 			return err

@@ -68,17 +68,21 @@ func setupResourceReadyConductorTest(
 	logFilename string,
 	resourceLifecycle conductor.ResourceLifecycle,
 	exclusive bool,
+	mutateConfig ...func(*conductor.Config),
 ) (logPath string, conductorInstance *conductor.Conductor) {
 	tb.Helper()
 
 	dir, logPath := setupConductorImageLifecycleKindLogFile(tb, logFilename, exclusive)
+	mutateConfig = append([]func(*conductor.Config){
+		func(config *conductor.Config) {
+			config.ResourceLifecycle = resourceLifecycle
+		},
+	}, mutateConfig...)
 	conductorInstance = newConductorWithImageLifecycleForTest(
 		tb,
 		noopConductorErrorHandler,
 		dir,
-		func(config *conductor.Config) {
-			config.ResourceLifecycle = resourceLifecycle
-		},
+		mutateConfig...,
 	)
 	conductorInstance.SetCountersReaderForTest(countersReaderForResourceReadyTest(tb))
 	return logPath, conductorInstance
@@ -381,4 +385,139 @@ func TestConductor_addSubscription_availableImageThenApplyFailure_restoresRefcou
 	_, ok := conductorInstance.SubscriptionByRegID(resourceReadySubscriptionCorrelationID)
 	require.False(t, ok)
 	require.Zero(t, conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
+}
+
+func TestConductor_rollbackAddPending_lingersLog(t *testing.T) {
+	const (
+		lingerNs = int64(time.Second)
+		startNs  = int64(1_000)
+	)
+
+	cancelAfterReadyTick := func(
+		t *testing.T,
+		conductorInstance *conductor.Conductor,
+		correlationID int64,
+		_ *int64,
+	) {
+		conductorInstance.DoWork()
+		require.Equal(t, conductor.NullCorrelationID, conductorInstance.ReceivedCorrelationID())
+		conductorInstance.CancelPending(correlationID)
+	}
+	subscriptionWithImage := func(
+		t *testing.T,
+		conductorInstance *conductor.Conductor,
+		logPath string,
+	) {
+		registerResourceReadySubscriptionPending(t, conductorInstance)
+		transmitResourceReadyAvailableImage(t, conductorInstance, logPath)
+	}
+	subscriptionFound := func(conductorInstance *conductor.Conductor) bool {
+		_, ok := conductorInstance.SubscriptionByRegID(resourceReadySubscriptionCorrelationID)
+		return ok
+	}
+
+	tests := []struct {
+		name          string
+		correlationID int64
+		setup         func(*testing.T, *conductor.Conductor, string)
+		rollback      func(*testing.T, *conductor.Conductor, int64, *int64)
+		found         func(*conductor.Conductor) bool
+	}{
+		{
+			name:          "subscriptionCancelAfterReadyTick",
+			correlationID: resourceReadySubscriptionCorrelationID,
+			setup: func(t *testing.T, conductorInstance *conductor.Conductor, logPath string) {
+				subscriptionWithImage(t, conductorInstance, logPath)
+				transmitResourceReadySubscriptionReady(t, conductorInstance)
+			},
+			rollback: cancelAfterReadyTick,
+			found:    subscriptionFound,
+		},
+		{
+			name:          "subscriptionExpire",
+			correlationID: resourceReadySubscriptionCorrelationID,
+			setup:         subscriptionWithImage,
+			rollback: func(
+				t *testing.T,
+				conductorInstance *conductor.Conductor,
+				correlationID int64,
+				nanoNs *int64,
+			) {
+				// Two steps keep each gap under the inter-service timeout.
+				for _, elapsed := range []time.Duration{600 * time.Millisecond, time.Second} {
+					*nanoNs = startNs + int64(elapsed)
+					conductorInstance.DoWork()
+				}
+				require.False(t, conductorInstance.IsTerminating())
+
+				done, _, err := conductorInstance.PollPending(correlationID)
+				require.True(t, done)
+				require.ErrorIs(t, err, conductor.ErrAwaitTimeout)
+			},
+			found: subscriptionFound,
+		},
+		{
+			name:          "subscriptionDriverError",
+			correlationID: resourceReadySubscriptionCorrelationID,
+			setup:         subscriptionWithImage,
+			rollback: func(
+				t *testing.T,
+				conductorInstance *conductor.Conductor,
+				correlationID int64,
+				_ *int64,
+			) {
+				require.True(t, conductorInstance.DriverError(conductor.ErrorResponse{
+					OffendingCommandCorrelationID: correlationID,
+					ErrorCode:                     11,
+					ErrorMessage:                  "add subscription rejected",
+				}))
+			},
+			found: subscriptionFound,
+		},
+		{
+			name:          "publicationCancelAfterReadyTick",
+			correlationID: resourceReadyPublicationCorrelationID,
+			setup: func(t *testing.T, conductorInstance *conductor.Conductor, logPath string) {
+				registerResourceReadyPublicationPending(t, conductorInstance, false)
+				transmitResourceReadyPublicationReady(t, conductorInstance, logPath, false)
+			},
+			rollback: cancelAfterReadyTick,
+			found: func(conductorInstance *conductor.Conductor) bool {
+				_, ok := conductorInstance.PublicationByRegID(resourceReadyPublicationCorrelationID)
+				return ok
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			nanoNs := startNs
+			logPath, conductorInstance := setupResourceReadyConductorTest(
+				t,
+				"rollback-linger.log",
+				ConductorResourceLifecycle,
+				false,
+				func(config *conductor.Config) {
+					config.NanoClock = func() int64 { return nanoNs }
+					config.ResourceLingerNs = lingerNs
+				},
+			)
+			registry := conductor.LogBuffersRegistryForTest(conductorInstance)
+
+			// Setup: the resource holds the log.
+			tc.setup(t, conductorInstance, logPath)
+			require.True(t, tc.found(conductorInstance))
+
+			// Rollback: the log stays mapped for the linger.
+			tc.rollback(t, conductorInstance, tc.correlationID, &nanoNs)
+
+			require.False(t, tc.found(conductorInstance))
+			require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+			require.Zero(t, conductor.LogBuffersRegistryRefCountForTest(registry, logPath))
+			require.Equal(
+				t,
+				nanoNs+lingerNs,
+				conductor.LingerDeadlineNsForTest(registry, logPath),
+			)
+		})
+	}
 }
