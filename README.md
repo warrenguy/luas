@@ -19,8 +19,8 @@ Measured against the Java stack at the Aeron release pinned in
 | Transport client | `aeron` | Functional | Counters, publication MDC destinations, `Image.reject`, block and raw poll, `ChannelUri` builder |
 | Archive client | `archive` | Partial | Recording listing, position queries, `ReplayMerge` |
 | Cluster client | `cluster/client` | Functional | Controlled egress dispatch, egress listener extensions |
-| Consensus module | `cluster` | Experimental | Snapshots, termination, cluster control, admin requests |
-| Service container | `cluster/service` | Experimental | Egress to clients, snapshots, recovery |
+| Consensus module | `cluster` | Experimental | Counters, mark file, backup and standby, `ClusterTool` |
+| Service container | `cluster/service` | Experimental | Service messages to the log, mark file, counters |
 
 Detail per component: [STATUS.md](STATUS.md).
 
@@ -150,6 +150,24 @@ for {
 Blocking connect and recording awaits call `DoWork` only on an invoker
 transport. `Poll` never calls `DoWork`. Set a recording signal handler.
 Otherwise the client drops those signals when it polls control events.
+
+## Cluster member
+
+[`cluster`](cluster/) and [`cluster/service`](cluster/service/) run one
+member and its services on one goroutine. The consensus module runs its
+transport client in invoker mode, as upstream does. Only the runner drives
+it.
+
+[`examples/cluster-member-service`](examples/cluster-member-service/) runs
+one member and an echo service:
+
+1. `cluster.OpenConsensusModule` opens the consensus module.
+2. `service.Open` opens a service container on the module's transport
+   client.
+3. `cluster.NewRunner` builds a runner from the module's parts.
+4. `Runner.RunWithServices` runs the module and the container until the
+   member stops.
+5. Close the container, then the module.
 
 ## Examples
 

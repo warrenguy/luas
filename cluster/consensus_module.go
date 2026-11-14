@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -30,15 +31,20 @@ type ConsensusModuleDeps struct {
 
 // ConsensusModule is one assembled consensus member.
 //
-// Open with [OpenConsensusModule]. The module owns every handle it opened.
+// Open with [OpenConsensusModule].
 //
-// The module closes every handle it owns. A transport client supplied through
-// Config.Aeron stays the caller's. The module does not own that client.
+// Ownership: the module owns every handle it opens. Close closes them. The
+// caller owns a transport client supplied through Config.Aeron.
 //
-// Concurrency: invoker-only. Every method must run on the duty cycle goroutine
-// in this order: aeron.Client.DoWork, then archive.Client.Poll, then
-// consensus.Agent.DoWork. Exception: [ConsensusModule.CommitPosition] reads the
-// mode-1 *atomic.Int64 and is safe from any goroutine.
+// Concurrency: call every method from the goroutine that runs the duty
+// cycle. Each cycle calls, in order:
+//   - aeron.Client.DoWork
+//   - archive.Client.Poll
+//   - consensus.Agent.DoWork
+//
+// Two methods are safe from any goroutine:
+//   - [ConsensusModule.CommitPosition]
+//   - [ConsensusModule.RequestClusterShutdown]
 //
 // Lifetime: the module outlives the latest election handle. A settled member
 // may install a further election from the open-time election factory. Each
@@ -98,6 +104,11 @@ type ConsensusModule struct {
 
 	// controlToggle is the cluster control toggle counter (type 202).
 	controlToggle *aeron.Counter
+
+	// shutdownMu guards shutdownToggle. RequestClusterShutdown runs on any
+	// goroutine. Close clears the toggle before it closes the counter.
+	shutdownMu     sync.Mutex
+	shutdownToggle *Toggle
 
 	// nodeControlToggle is the node control toggle counter (type 233).
 	nodeControlToggle *aeron.Counter
@@ -579,10 +590,14 @@ func OpenConsensusModule(
 		counterID: module.moduleState.CounterID(),
 		reader:    counters,
 	})
-	module.agent.SetClusterControlToggle(Toggle{
+
+	toggle := Toggle{
 		counterID: module.controlToggle.CounterID(),
 		reader:    counters,
-	})
+	}
+	module.agent.SetClusterControlToggle(toggle)
+	module.shutdownToggle = &toggle
+
 	module.agent.SetNodeControlToggle(Toggle{
 		counterID: module.nodeControlToggle.CounterID(),
 		reader:    counters,
@@ -663,7 +678,9 @@ func (m *ConsensusModule) trackLogReplication(r *logReplication) {
 //
 // Idempotent. Safe on a nil receiver.
 //
-// A transport client supplied through Config.Aeron stays open.
+// A transport client supplied through Config.Aeron stays open. Close that
+// client after Close returns. Close releases the module's publications,
+// subscriptions and counters through that client.
 //
 // Returns the joined close errors, or nil. After a lost archive, Close returns
 // the errors of its failed archive stop requests.
@@ -673,6 +690,11 @@ func (m *ConsensusModule) Close() error {
 	}
 
 	var err error
+
+	// Refuse shutdown requests before the toggle counter closes.
+	m.shutdownMu.Lock()
+	m.shutdownToggle = nil
+	m.shutdownMu.Unlock()
 
 	// Stop the services first, so the counter and Config.ErrorHandler still
 	// see a failed send.
@@ -826,6 +848,38 @@ func (m *ConsensusModule) Close() error {
 		m.recovery = nil
 	}
 	return err
+}
+
+// RequestClusterShutdown asks the whole cluster to shut down. It sets SHUTDOWN
+// on this module's cluster control toggle, as a control tool in another
+// process does.
+//
+// Behaviour:
+//   - The toggle accepts the request only while this member leads and no
+//     other toggle action is pending.
+//   - The leader acts on an accepted request at its next slow tick. It takes
+//     a snapshot, and every member terminates.
+//   - A leadership loss before that tick drops the request. The module then
+//     stores INACTIVE over SHUTDOWN.
+//
+// Concurrency: safe from any goroutine, also during and after Close.
+//
+// Returns true when the toggle accepts the request, not when the cluster
+// stops. Returns false when the toggle refuses the request or Close has
+// started.
+func (m *ConsensusModule) RequestClusterShutdown() bool {
+	if m == nil {
+		return false
+	}
+
+	m.shutdownMu.Lock()
+	defer m.shutdownMu.Unlock()
+
+	if m.shutdownToggle == nil {
+		return false
+	}
+
+	return consensus.ControlToggleShutdown.Toggle(*m.shutdownToggle)
 }
 
 // Client returns the transport client, or nil after Close.

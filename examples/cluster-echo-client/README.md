@@ -75,6 +75,9 @@ Status (stderr; `log` adds a timestamp prefix):
 2026/07/06 15:04:05 cluster-echo-client: offered ping at position <n>
 ```
 
+The client resends the ping every 250 ms until the echo arrives. Each resend
+logs another `offered ping` line.
+
 Payload (stdout):
 
 ```
@@ -88,6 +91,9 @@ cluster-echo-client: echo ok ("luas-cluster-echo-ping")
 | `AERON_DIR` | `/dev/shm/aeron` | Same absolute path on host and Java container |
 | `AERON_TERM_BUFFER_LENGTH` | `65536` on cluster container | Required on Java cluster (`entrypoint-cluster.sh`) |
 | `AERON_IPC_TERM_BUFFER_LENGTH` | `65536` on cluster container | Required on Java cluster; not read by Go client |
+| `CLUSTER_INGRESS_CHANNEL` | `aeron:ipc?term-length=64k` | Ingress channel. Empty keeps the default. |
+| `CLUSTER_INGRESS_ENDPOINTS` | *(empty)* | UDP ingress map, for example `0=localhost:9002`. Leave unset for IPC. |
+| `CLUSTER_EGRESS_CHANNEL` | `aeron:ipc?term-length=64k` | Egress channel. Empty keeps the default. |
 
 ## Cluster channels
 
@@ -98,3 +104,9 @@ cluster-echo-client: echo ok ("luas-cluster-echo-ping")
 | Ingress endpoints | *(empty; IPC passthrough)* |
 | Ingress stream | 101 |
 | Egress stream | 102 |
+
+## Go member
+
+[`examples/cluster-member-service`](../cluster-member-service/) runs one Go
+member and an echo service on a shared `bin/aeronmd`. That README sets the
+`CLUSTER_*` variables for UDP ingress.

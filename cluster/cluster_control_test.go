@@ -1,6 +1,8 @@
 package cluster
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -104,4 +106,102 @@ func TestFindControlToggle(t *testing.T) {
 		toggle.Store(1)
 		require.Equal(t, int64(0), toggle.Load())
 	})
+}
+
+func TestConsensusModule_RequestClusterShutdown(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		value     consensus.ControlToggleState
+		close     bool
+		wantOK    bool
+		wantValue consensus.ControlToggleState
+	}{
+		{"leader", consensus.ControlToggleNeutral, false, true, consensus.ControlToggleShutdown},
+		{"not leader", consensus.ControlToggleInactive, false, false, consensus.ControlToggleInactive},
+		{"action pending", consensus.ControlToggleSuspend, false, false, consensus.ControlToggleSuspend},
+		{"closed", consensus.ControlToggleNeutral, true, false, consensus.ControlToggleNeutral},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			toggle := newShutdownToggle(t, tt.value)
+			module := &ConsensusModule{shutdownToggle: &toggle}
+
+			if tt.close {
+				require.NoError(t, module.Close())
+			}
+
+			require.Equal(t, tt.wantOK, module.RequestClusterShutdown())
+			require.Equal(t, int64(tt.wantValue), toggle.Load())
+		})
+	}
+
+	t.Run("nil module", func(t *testing.T) {
+		t.Parallel()
+
+		var module *ConsensusModule
+		require.False(t, module.RequestClusterShutdown())
+	})
+
+	t.Run("concurrent with close", func(t *testing.T) {
+		t.Parallel()
+
+		toggle := newShutdownToggle(t, consensus.ControlToggleNeutral)
+		module := &ConsensusModule{shutdownToggle: &toggle}
+
+		var accepted atomic.Int32
+		var wg sync.WaitGroup
+
+		for range 4 {
+			wg.Go(func() {
+				for range 100 {
+					if module.RequestClusterShutdown() {
+						accepted.Add(1)
+					}
+				}
+			})
+		}
+
+		require.NoError(t, module.Close())
+		wg.Wait()
+		require.False(t, module.RequestClusterShutdown())
+
+		// The toggle accepts one request at most. A request that won stored
+		// SHUTDOWN.
+		require.LessOrEqual(t, accepted.Load(), int32(1))
+
+		want := consensus.ControlToggleNeutral
+		if accepted.Load() == 1 {
+			want = consensus.ControlToggleShutdown
+		}
+
+		require.Equal(t, int64(want), toggle.Load())
+	})
+}
+
+func newShutdownToggle(tb testing.TB, value consensus.ControlToggleState) Toggle {
+	tb.Helper()
+
+	meta := make([]byte, cnc.CounterMetadataLength)
+	values := make([]byte, cnc.CounterValueLength)
+	require.NoError(tb, cnc.WriteCounterRecordWithKey(
+		meta,
+		values,
+		0,
+		cnc.CounterRecordAllocated,
+		consensus.ClusterControlToggleCounterTypeID,
+		clusterIDCounterKey,
+		"toggle",
+		0,
+		int64(value),
+	))
+
+	reader, err := cnc.NewCountersReader(meta, values)
+	require.NoError(tb, err)
+
+	return Toggle{counterID: 0, reader: reader}
 }

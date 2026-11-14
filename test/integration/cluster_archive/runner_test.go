@@ -415,8 +415,8 @@ func TestConsensusModuleRunnerRunsMemberAndService(t *testing.T) {
 		run.fail(t, "toggle did not read NEUTRAL: %d", member.toggle.Load())
 	}
 
-	if !consensus.ControlToggleShutdown.Toggle(member.toggle) {
-		run.fail(t, "shutdown toggle rejected")
+	if !member.module.RequestClusterShutdown() {
+		run.fail(t, "shutdown request rejected")
 	}
 
 	err := run.await(t)
