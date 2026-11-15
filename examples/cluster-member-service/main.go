@@ -85,6 +85,10 @@ func run(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Restore default signal handling on the first signal. A second signal
+	// then ends a stuck stop.
+	context.AfterFunc(ctx, stop)
+
 	svc := &echoService{}
 
 	cfg := cluster.Config{
@@ -149,7 +153,8 @@ func run(args []string) int {
 
 	err = runner.RunWithServices(ctx, container.Agent())
 
-	// Restore default signal handling, so a second signal ends a stuck Close.
+	// Restore default signal handling after a stop without a signal. A signal
+	// then ends a stuck Close.
 	stop()
 	log.Printf("cluster-member-service: stopped: %v", err)
 

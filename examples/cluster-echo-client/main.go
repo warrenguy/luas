@@ -112,7 +112,7 @@ func main() {
 		}
 
 		if time.Since(sentAt) >= resendInterval {
-			sendPing(echoCtx, session)
+			sendPing(session)
 			sentAt = time.Now()
 		}
 
@@ -125,22 +125,21 @@ func main() {
 	fmt.Printf("cluster-echo-client: echo ok (%q)\n", echoed)
 }
 
-// sendPing offers the ping on cluster ingress. It retries while the stream
-// is full or busy. It returns when ctx ends.
-func sendPing(ctx context.Context, session *client.AeronCluster) {
-	pos, err := session.IngressOfferUntilPositive(ctx, client.IngressOfferConfig{}, func() int64 {
-		return session.Offer(pingPayload)
-	})
-	if err != nil {
-		// The poll loop reports a context end.
-		if ctx.Err() != nil {
-			return
-		}
+// sendPing offers the ping once on cluster ingress. A back-pressured or
+// admin-action result does not fail the client. The poll loop resends the
+// ping.
+func sendPing(session *client.AeronCluster) {
+	pos := session.Offer(pingPayload)
 
-		log.Fatalf("cluster-echo-client: ingress offer failed: %v", err)
+	switch {
+	case pos > 0:
+		log.Printf("cluster-echo-client: offered ping at position %d", pos)
+
+	case aeron.IsIngressRetriable(pos):
+
+	default:
+		log.Fatalf("cluster-echo-client: ingress offer failed: %s", aeron.PositionCodeName(pos))
 	}
-
-	log.Printf("cluster-echo-client: offered ping at position %d", pos)
 }
 
 func closeWithLog(closeFn func() error) {
