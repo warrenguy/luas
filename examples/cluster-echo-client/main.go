@@ -1,13 +1,14 @@
 //go:build example
 
-// cluster-echo-client sends one ingress message to a running Java Aeron cluster
-// and waits for EchoService to return the same bytes on egress.
+// cluster-echo-client sends a ping on ingress. It resends the ping every
+// 250 ms until the same bytes arrive on egress.
 //
-// Prerequisites: Java cluster with embedded media driver (see README). Go client
-// shares AERON_DIR with that driver; do not start a separate aeronmd for IPC.
+// Ingress and egress default to IPC. CLUSTER_INGRESS_CHANNEL,
+// CLUSTER_INGRESS_ENDPOINTS, and CLUSTER_EGRESS_CHANNEL override the
+// defaults.
 //
-// Flow: connect transport, open cluster session on IPC channels, offer a ping
-// on ingress, poll the session until egress delivers the echo. Run:
+// Prerequisites: see README. The Go client shares AERON_DIR with the media
+// driver. Do not start a separate aeronmd for the IPC default. Run:
 // go run -tags=example ./examples/cluster-echo-client/
 package main
 
@@ -30,6 +31,7 @@ import (
 const (
 	defaultAeronDir = "/dev/shm/aeron"
 	echoTimeout     = 30 * time.Second
+	resendInterval  = 250 * time.Millisecond
 	ipcChannel      = "aeron:ipc?term-length=64k"
 )
 
@@ -39,10 +41,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Same absolute path as the Java cluster container (default from README).
 	aeronDir := cmp.Or(os.Getenv("AERON_DIR"), defaultAeronDir)
+	ingressChannel := cmp.Or(os.Getenv("CLUSTER_INGRESS_CHANNEL"), ipcChannel)
+	ingressEndpoints := os.Getenv("CLUSTER_INGRESS_ENDPOINTS")
+	egressChannel := cmp.Or(os.Getenv("CLUSTER_EGRESS_CHANNEL"), ipcChannel)
 
-	// Connect to the cluster's embedded media driver.
+	// Connect to the media driver the cluster member uses.
 	//
 	// ErrorHandler logs asynchronous driver faults not returned by the calls below.
 	transport, err := aeron.Connect(ctx, aeron.Config{
@@ -61,17 +65,18 @@ func main() {
 
 	var echoed []byte
 
-	// Open a cluster client session on IPC ingress and egress. EgressHandler
-	// captures the first message the cluster returns on the egress stream.
+	// Open a cluster client session. EgressHandler keeps the first message
+	// the cluster returns on egress.
 	session, err := client.Connect(ctx, client.Config{
-		Aeron:          transport,
-		AeronDir:       aeronDir,
-		IngressChannel: ipcChannel,
-		EgressChannel:  ipcChannel,
+		Aeron:            transport,
+		AeronDir:         aeronDir,
+		IngressChannel:   ingressChannel,
+		IngressEndpoints: ingressEndpoints,
+		EgressChannel:    egressChannel,
 		EgressHandler: &client.EgressHandlers{
 			MessageBytesFunc: func(_, _ int64, payload []byte, _ *aeron.Header) {
 				if len(echoed) == 0 {
-					echoed = payload
+					echoed = bytes.Clone(payload)
 				}
 			},
 		},
@@ -86,22 +91,14 @@ func main() {
 	}
 	defer closeWithLog(session.Close)
 
-	// Send the ping on cluster ingress, retrying while the stream is momentarily full or busy.
-	pos, err := session.IngressOfferUntilPositive(ctx, client.IngressOfferConfig{}, func() int64 {
-		return session.Offer(pingPayload)
-	})
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return
-		}
-		log.Fatalf("cluster-echo-client: ingress offer failed: %v", err)
-	}
-	log.Printf("cluster-echo-client: offered ping at position %d", pos)
-
 	echoCtx, cancel := context.WithTimeout(ctx, echoTimeout)
 	defer cancel()
 
-	// Poll the session until the message we sent on ingress arrives on egress.
+	var sentAt time.Time
+
+	// Poll the session until the ping comes back on egress. The service drops
+	// a reply while its response publication connects, so resend the ping
+	// every resendInterval.
 	for len(echoed) == 0 {
 		if err := echoCtx.Err(); err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -113,6 +110,12 @@ func main() {
 				session.SessionState(),
 			)
 		}
+
+		if time.Since(sentAt) >= resendInterval {
+			sendPing(session)
+			sentAt = time.Now()
+		}
+
 		session.SpinOnce()
 	}
 
@@ -120,6 +123,23 @@ func main() {
 		log.Fatalf("cluster-echo-client: echo mismatch: got %q want %q", echoed, pingPayload)
 	}
 	fmt.Printf("cluster-echo-client: echo ok (%q)\n", echoed)
+}
+
+// sendPing offers the ping once on cluster ingress. A back-pressured or
+// admin-action result does not fail the client. The poll loop resends the
+// ping.
+func sendPing(session *client.AeronCluster) {
+	pos := session.Offer(pingPayload)
+
+	switch {
+	case pos > 0:
+		log.Printf("cluster-echo-client: offered ping at position %d", pos)
+
+	case aeron.IsIngressRetriable(pos):
+
+	default:
+		log.Fatalf("cluster-echo-client: ingress offer failed: %s", aeron.PositionCodeName(pos))
+	}
 }
 
 func closeWithLog(closeFn func() error) {
