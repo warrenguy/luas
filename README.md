@@ -24,6 +24,16 @@ Measured against the Java stack at the Aeron release pinned in
 
 Detail per component: [STATUS.md](STATUS.md).
 
+## Performance
+
+[luas-benchmarks](https://github.com/warrenguy/luas-benchmarks) compares
+Luas with Aeron (Java) and aeron-go against the same C media driver.
+
+- [RESULTS.md](https://github.com/warrenguy/luas-benchmarks/blob/main/RESULTS.md):
+  the tables of the latest run.
+- [Benchmark report](https://github.com/warrenguy/luas-benchmarks/releases/download/run-20261111T123648Z/luas-benchmarks-20261111T123648Z.pdf)
+  (PDF): the method, the latency curves, and the limits.
+
 ## Supported platforms
 
 Linux with kernel 5.14 or later, on amd64 or arm64.
