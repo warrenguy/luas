@@ -5,13 +5,14 @@ import (
 	"github.com/warrenguy/luas/internal/transportfault"
 )
 
-// ConnectResult holds archive control handles and session ids after a successful
-// connect handshake. Poll transfers ownership of connect resources into the result;
-// see AsyncConnect.Close for success vs failure cleanup.
+// ConnectResult holds archive control handles and session ids from a
+// successful connect handshake. AsyncConnect.Poll transfers ownership of
+// connect resources to the result. AsyncConnect.Close documents cleanup on
+// success and on failure.
 //
-// Proxy Try methods and Poller.Poll never call DoWork; the caller must drive
-// Aeron.DoWork between post-connect poll and offer steps (or use
-// [Client.ControlOfferUntilPositive] for offer retries).
+// Proxy Try methods and Poller.Poll do not call DoWork. With an invoker-mode
+// client, the caller calls Aeron.DoWork between poll and offer steps, or uses
+// [Client.ControlOfferUntilPositive] for offer retries.
 type ConnectResult struct {
 	ControlSessionID int64
 	ArchiveID        int64
@@ -27,7 +28,7 @@ type ConnectResult struct {
 	OwnsAeronClient bool
 	Config          Config
 
-	// transportFault stores errors from the connect-owned transport client.
-	// Nil when the caller supplied Config.Aeron.
+	// transportFault reads the termination cause of a connect-owned client.
+	// It is nil when the caller supplied Config.Aeron.
 	transportFault *transportfault.Monitor
 }

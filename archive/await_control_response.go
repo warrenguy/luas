@@ -52,13 +52,16 @@ func tryMatchControlResponseDiscardStale(
 	return fields, err, ok
 }
 
-// AwaitControlResponse loops DoWork, a termination check, and pollFn until
+// AwaitControlResponse loops a termination check and pollFn until
 // poller captures the ControlResponse matching controlSessionID and
 // correlationID.
 //
-// Drives DoWork on aeronClient only for the await duration. cfg.IdleStrategy
-// paces empty polls. The await resets cfg.IdleStrategy on every exit path. Nil
-// cfg.IdleStrategy uses NewDefaultIdleStrategy.
+// Behaviour:
+//   - The await calls DoWork on aeronClient only when
+//     aeronClient.HasConductorInvoker reports true.
+//   - cfg.IdleStrategy paces empty polls.
+//   - The await resets cfg.IdleStrategy on every exit path.
+//   - Nil cfg.IdleStrategy uses NewDefaultIdleStrategy.
 //
 // Waits up to Config.ControlResponseTimeout, or until ctx.Deadline() when that
 // is earlier.
@@ -231,7 +234,9 @@ func runControlAwaitLoop(
 			return err
 		}
 
-		aeronClient.DoWork()
+		if aeronClient.HasConductorInvoker() {
+			aeronClient.DoWork()
+		}
 
 		if err := checkTransportFault(ctx, aeronClient, checks.transportFault); err != nil {
 			return err

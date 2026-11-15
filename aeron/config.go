@@ -7,12 +7,14 @@ import (
 
 	"github.com/warrenguy/luas/aeron/cnc"
 	"github.com/warrenguy/luas/aeron/conductor"
+	"github.com/warrenguy/luas/idlestrategy"
 )
 
 const (
 	defaultDriverTimeout          = 10 * time.Second
 	defaultKeepAliveInterval      = 500 * time.Millisecond
 	defaultIdleSleepDuration      = 16 * time.Millisecond
+	maxIdleSleepDuration          = time.Second
 	defaultResourceLingerDuration = 3 * time.Second
 	defaultPollTimeout            = 10 * time.Second
 
@@ -25,7 +27,12 @@ const (
 type Config struct {
 	AeronDir string
 
-	DriverTimeout     time.Duration
+	// DriverTimeout bounds CNC ready and driver heartbeat waits in Connect.
+	// It also bounds blocking adds and session-id waits on the Client.
+	//
+	// Zero takes the default, 10s. Connect rejects a negative value.
+	DriverTimeout time.Duration
+
 	KeepAliveInterval time.Duration
 
 	// InterServiceTimeout bounds the gap between DoWork calls. A longer gap
@@ -37,6 +44,9 @@ type Config struct {
 	// rejects a value at or below KeepAliveInterval.
 	InterServiceTimeout time.Duration
 
+	// IdleSleepDuration is the sleep of the default ConductorIdleStrategy.
+	//
+	// Must be between 0 and 1s. Zero takes the default, 16ms.
 	IdleSleepDuration time.Duration
 
 	// ResourceLingerDuration delays log unmap after the last Publication,
@@ -112,14 +122,22 @@ type Config struct {
 	EpochClock conductor.EpochClock
 	NanoClock  conductor.NanoClock
 
-	UseConductorInvoker *bool
-}
+	// UseConductorInvoker selects invoker mode.
+	//
+	// False, the default, makes Connect start a conductor goroutine. True
+	// leaves DoWork calls to the caller.
+	UseConductorInvoker bool
 
-func (cfg Config) useConductorInvokerEnabled() bool {
-	if cfg.UseConductorInvoker == nil {
-		return true
-	}
-	return *cfg.UseConductorInvoker
+	// ConductorIdleStrategy idles the background conductor goroutine.
+	//
+	// Behaviour:
+	//   - Nil makes Connect build a new idlestrategy.NewSleepingMillis of
+	//     IdleSleepDuration for each client.
+	//   - Invoker mode ignores this field.
+	//   - An Idle call that outlasts InterServiceTimeout terminates the client.
+	//   - Give each client its own strategy. A strategy does not support
+	//     concurrent Idle calls.
+	ConductorIdleStrategy idlestrategy.IdleStrategy
 }
 
 func (cfg Config) resourceLingerDuration() time.Duration {

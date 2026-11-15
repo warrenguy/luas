@@ -8,6 +8,7 @@ import (
 
 	"github.com/warrenguy/luas/aeron"
 	"github.com/warrenguy/luas/aeron/cnc"
+	"github.com/warrenguy/luas/idlestrategy"
 )
 
 func TestNormalizeConfig_defaults(t *testing.T) {
@@ -25,13 +26,15 @@ func TestNormalizeConfig_defaults(t *testing.T) {
 	require.NotNil(t, normalized.NanoClock)
 	require.Positive(t, normalized.EpochClock())
 	require.Positive(t, normalized.NanoClock())
+	require.False(t, normalized.UseConductorInvoker)
+	require.Nil(t, normalized.ConductorIdleStrategy)
 }
 
 func TestNormalizeConfig_preservesExplicitValues(t *testing.T) {
 	epochMs := int64(42)
 	nanoNs := int64(99)
-	useInvoker := false
 	resourceLinger := 7 * time.Second
+	strategy := idlestrategy.NewSleepingMillis(time.Millisecond)
 
 	normalized := aeron.NormalizeConfigForTest(aeron.Config{
 		DriverTimeout:             3 * time.Second,
@@ -48,7 +51,8 @@ func TestNormalizeConfig_preservesExplicitValues(t *testing.T) {
 		NanoClock: func() int64 {
 			return nanoNs
 		},
-		UseConductorInvoker: &useInvoker,
+		UseConductorInvoker:   true,
+		ConductorIdleStrategy: strategy,
 	})
 
 	require.Equal(t, 3*time.Second, normalized.DriverTimeout)
@@ -62,7 +66,21 @@ func TestNormalizeConfig_preservesExplicitValues(t *testing.T) {
 	require.Equal(t, 3*time.Second, normalized.PublicationOfferTimeout)
 	require.Equal(t, epochMs, normalized.EpochClock())
 	require.Equal(t, nanoNs, normalized.NanoClock())
-	require.False(t, normalized.UseConductorInvokerEnabledForTest())
+	require.True(t, normalized.UseConductorInvoker)
+	require.Same(t, strategy, normalized.ConductorIdleStrategy)
+}
+
+func TestConfig_conductorIdleStrategy(t *testing.T) {
+	cfg := aeron.NormalizeConfigForTest(aeron.Config{})
+	first := aeron.ConductorIdleStrategyForTest(cfg)
+	second := aeron.ConductorIdleStrategyForTest(cfg)
+
+	require.NotNil(t, first)
+	require.NotSame(t, first, second)
+
+	strategy := idlestrategy.NewSleepingMillis(time.Millisecond)
+	cfg.ConductorIdleStrategy = strategy
+	require.Same(t, strategy, aeron.ConductorIdleStrategyForTest(cfg))
 }
 
 func TestResolveInterServiceTimeout(t *testing.T) {

@@ -35,6 +35,8 @@ type recoveryFakeTransport struct {
 
 	pumps    int
 	pumpHook func(pumps int)
+	reads    int
+	readHook func(reads int)
 
 	replay snapshotLoadAdder
 }
@@ -56,6 +58,11 @@ func newRecoveryFakeTransport(tb testing.TB) *recoveryFakeTransport {
 }
 
 func (f *recoveryFakeTransport) CountersReader() (*cnc.CountersReader, error) {
+	f.reads++
+	if f.readHook != nil {
+		f.readHook(f.reads)
+	}
+
 	if f.readerErr != nil {
 		return nil, f.readerErr
 	}

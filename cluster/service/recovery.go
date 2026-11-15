@@ -83,6 +83,17 @@ type recoveryTransport interface {
 
 var _ recoveryTransport = (*aeron.Client)(nil)
 
+// transportPump returns transport.DoWork on an invoker transport, else a func
+// that returns 0. A transport without a HasConductorInvoker method counts as
+// an invoker transport.
+func transportPump(transport recoveryTransport) func() int {
+	reporter, hasInvokerMethod := transport.(interface{ HasConductorInvoker() bool })
+	if hasInvokerMethod && !reporter.HasConductorInvoker() {
+		return func() int { return 0 }
+	}
+	return transport.DoWork
+}
+
 // defaultRecoveryConfig returns a copy of recovery with the defaults set.
 func defaultRecoveryConfig(recovery RecoveryConfig) *RecoveryConfig {
 	recovery.Timeout = cmp.Or(recovery.Timeout, DefaultRecoveryTimeout)
@@ -114,7 +125,7 @@ func validateRecoveryConfig(cfg Config) error {
 }
 
 // awaitRecoveryState returns the key of the first allocated recovery state
-// counter. It pumps transport between reads.
+// counter. It pumps an invoker transport between reads.
 //
 // Returns an error when:
 //   - the counter does not appear within timeout
@@ -127,6 +138,7 @@ func awaitRecoveryState(
 	timeout time.Duration,
 ) (codecs.RecoveryStateKeyFields, error) {
 	deadline := time.Now().Add(timeout)
+	pump := transportPump(transport)
 	idle := idlestrategy.NewDefaultBackoff()
 	for {
 		reader, err := transport.CountersReader()
@@ -142,7 +154,7 @@ func awaitRecoveryState(
 				return checkRecoveryState(key[:])
 			}
 		}
-		idle.Idle(transport.DoWork())
+		idle.Idle(pump())
 		if !time.Now().Before(deadline) {
 			return codecs.RecoveryStateKeyFields{}, fmt.Errorf(
 				"%w after %s", errRecoveryStateMissing, timeout,
@@ -252,8 +264,9 @@ func awaitRecoveryPath(cfg Config, transport recoveryTransport) (recoveryPath, e
 // nil. A failed add does not send the ack. Each PublishServiceAck call
 // retries under [aeron.OfferAttempts]. sendFailedStartAck repeats a
 // retriable offer until cfg.Recovery.Timeout passes. sendFailedStartAck
-// pumps transport between offers. The pump lets a new publication
-// connect. sendFailedStartAck does not send the ack on a terminal code.
+// pumps an invoker transport between offers. The pump lets a new
+// publication connect. sendFailedStartAck does not send the ack on a terminal
+// code.
 // sendFailedStartAck does not send the ack when the timeout passes.
 //
 // Ownership: closes the publication added here. The caller owns a non-nil
@@ -286,12 +299,13 @@ func sendFailedStartAck(
 		ServiceID:   cfg.ServiceID,
 	}
 	deadline := time.Now().Add(cfg.Recovery.Timeout)
+	pump := transportPump(transport)
 	idle := idlestrategy.NewDefaultBackoff()
 	for {
 		result := proxy.PublishServiceAck(fields)
 		if result > 0 || !aeron.IsOfferRetriable(result) || !time.Now().Before(deadline) {
 			return
 		}
-		idle.Idle(transport.DoWork())
+		idle.Idle(pump())
 	}
 }

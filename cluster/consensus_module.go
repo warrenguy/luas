@@ -139,6 +139,11 @@ type ConsensusModule struct {
 	reseedCtx context.Context
 }
 
+func memberAeronConfig(cfg aeron.Config) aeron.Config {
+	cfg.UseConductorInvoker = true
+	return cfg
+}
+
 // OpenConsensusModule assembles one consensus member. Open binds every
 // transport handle and agent dependency before it returns.
 //
@@ -172,6 +177,7 @@ type ConsensusModule struct {
 //
 // Returns an error when:
 //   - Config fails Validate
+//   - Config.Aeron is set and HasConductorInvoker reports false
 //   - a connect fails
 //   - a counter add or lookup fails
 //   - recovery or the snapshot load fails
@@ -206,9 +212,13 @@ func OpenConsensusModule(
 	}()
 
 	if cfg.Aeron != nil {
+		if !cfg.Aeron.HasConductorInvoker() {
+			return nil, errors.New("cluster: Aeron must run with UseConductorInvoker true")
+		}
+
 		module.client = cfg.Aeron
 	} else {
-		client, err := aeron.Connect(ctx, cfg.AeronConfig)
+		client, err := aeron.Connect(ctx, memberAeronConfig(cfg.AeronConfig))
 		if err != nil {
 			return nil, fmt.Errorf("cluster: connect aeron client: %w", err)
 		}

@@ -3,6 +3,7 @@
 package integration_test
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -449,42 +450,73 @@ func TestClientSurvivesStallBelowLivenessTimeout(t *testing.T) {
 	require.False(t, client.IsTerminating())
 }
 
-// Ephemeral driver: md.Kill() must not terminate the package shared driver.
+// TestClientDetectsDriverDeath kills an ephemeral driver and expects
+// DriverTimeoutError in each conductor mode.
 func TestClientDetectsDriverDeath(t *testing.T) {
-	md := harness.StartParallel(t)
+	t.Run("invoker", func(t *testing.T) {
+		md := harness.StartParallel(t)
 
-	driverTimeout := 2 * time.Second
-	var gotErr error
-	client := harness.ConnectClient(t, md, aeron.Config{
-		DriverTimeout: driverTimeout,
-		ErrorHandler: func(err error) {
-			gotErr = err
-		},
+		driverTimeout := 2 * time.Second
+		var gotErr error
+		client := harness.ConnectClient(t, md, aeron.Config{
+			DriverTimeout: driverTimeout,
+			ErrorHandler: func(err error) {
+				gotErr = err
+			},
+		})
+
+		for range 20 {
+			client.DoWork()
+			time.Sleep(aeron.DefaultIdleSleepDuration)
+		}
+
+		require.NoError(t, md.Kill())
+
+		deadline := time.Now().Add(driverTimeout + time.Second)
+		for time.Now().Before(deadline) {
+			client.DoWork()
+			if gotErr != nil {
+				var timeoutErr *aeron.DriverTimeoutError
+				require.ErrorAs(t, gotErr, &timeoutErr)
+				var staleErr *conductor.DriverKeepaliveStaleError
+				require.ErrorAs(t, timeoutErr.Unwrap(), &staleErr)
+				require.Greater(t, staleErr.AgeMs, staleErr.TimeoutMs)
+				require.True(t, client.IsTerminating())
+				return
+			}
+			time.Sleep(aeron.DefaultIdleSleepDuration)
+		}
+
+		require.Fail(t, "expected DriverTimeoutError after driver kill")
 	})
 
-	for range 20 {
-		client.DoWork()
-		time.Sleep(aeron.DefaultIdleSleepDuration)
-	}
+	t.Run("background", func(t *testing.T) {
+		md := harness.StartParallel(t)
 
-	require.NoError(t, md.Kill())
+		driverTimeout := 2 * time.Second
+		var gotErr atomic.Pointer[aeron.DriverTimeoutError]
+		client := harness.ConnectBackgroundClient(t, md, aeron.Config{
+			DriverTimeout: driverTimeout,
+			ErrorHandler: func(err error) {
+				var timeoutErr *aeron.DriverTimeoutError
+				if errors.As(err, &timeoutErr) {
+					gotErr.CompareAndSwap(nil, timeoutErr)
+				}
+			},
+		})
 
-	deadline := time.Now().Add(driverTimeout + time.Second)
-	for time.Now().Before(deadline) {
-		client.DoWork()
-		if gotErr != nil {
-			var timeoutErr *aeron.DriverTimeoutError
-			require.ErrorAs(t, gotErr, &timeoutErr)
-			var staleErr *conductor.DriverKeepaliveStaleError
-			require.ErrorAs(t, timeoutErr.Unwrap(), &staleErr)
-			require.Greater(t, staleErr.AgeMs, staleErr.TimeoutMs)
-			require.True(t, client.IsTerminating())
-			return
-		}
-		time.Sleep(aeron.DefaultIdleSleepDuration)
-	}
+		require.NoError(t, md.Kill())
 
-	require.Fail(t, "expected DriverTimeoutError after driver kill")
+		require.Eventually(t, func() bool {
+			return gotErr.Load() != nil
+		}, driverTimeout+time.Second, aeron.DefaultIdleSleepDuration,
+			"expected DriverTimeoutError after driver kill")
+
+		require.True(t, client.IsTerminating())
+
+		var timeoutErr *aeron.DriverTimeoutError
+		require.ErrorAs(t, client.TerminationCause(), &timeoutErr)
+	})
 }
 
 func TestClientReadsSystemCounters(t *testing.T) {
@@ -546,8 +578,9 @@ func TestTwoClientsConcurrentRingOffers(t *testing.T) {
 	// DriverTimeout and explicit DoWork pump before Close; ring drain shares that budget.
 	var hadClientError atomic.Bool
 	connectCfg := aeron.Config{
-		AeronDir:      md.Dir,
-		DriverTimeout: harness.CommandPollDeadline,
+		AeronDir:            md.Dir,
+		DriverTimeout:       harness.CommandPollDeadline,
+		UseConductorInvoker: true,
 		ErrorHandler: func(err error) {
 			hadClientError.Store(true)
 		},

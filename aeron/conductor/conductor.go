@@ -268,8 +268,10 @@ func (conductor *Conductor) service() int {
 	if timedOutActiveCorrelationID != NullCorrelationID {
 		conductor.receivedCorrelationID = timedOutActiveCorrelationID
 	}
-	// Re-sample NanoClock so linger sweep sees time advanced during this tick.
-	if conductor.logBuffersRegistry.HasScheduledLinger() {
+
+	// Read the clock again after Receive. A handler can advance the clock
+	// during this tick. The sweep takes its own reading under the lock.
+	if conductor.logBuffersRegistry.isLingerSweepDue(conductor.config.NanoClock) {
 		workCount += underResourceWriteLockResult(conductor, func() int {
 			invokeLingerSweepBlocker(conductor)
 			return conductor.sweepLingeringLogBuffers(conductor.config.NanoClock())
@@ -833,8 +835,10 @@ func (conductor *Conductor) terminateWithError(err error) {
 	entered := conductor.enterHandler()
 	defer conductor.exitHandler(entered)
 
-	conductor.terminating.Store(true)
+	// The cause store happens before the terminating flag. A reader that
+	// observes termination also observes the cause.
 	conductor.terminationCause = err
+	conductor.terminating.Store(true)
 	conductor.ClearPending()
 	conductor.forceCloseResources()
 	conductor.ReportError(err)

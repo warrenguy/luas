@@ -107,13 +107,11 @@ var _ ControlPoller = (*aeron.Subscription)(nil)
 // append to the slice. This differs from [QueueControlIngress], which passes a
 // buffer the caller enqueued and still owns.
 //
-// Concurrency: invoker-only. Poll must run on the same goroutine as the service
-// agent duty cycle, matching the Subscription contract. Not safe for concurrent
-// use.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
 //
 // Lifetime: the caller owns the subscription and closes it. This type closes
-// nothing. Call FreeSessionBuffer from the unavailable-image handler for
-// incomplete reassembly builders. Call Clear when the ingress is unbound.
+// nothing. Call Clear when the ingress is unbound.
 //
 // Do not copy. The assembler and fragment handler bind to the construction
 // receiver. A value copy has its own onFragment field, so Poll on the copy sets
@@ -202,12 +200,8 @@ func (s *SubscriptionControlIngress) handleBytes(payload []byte, _ *aeron.Header
 // when no builder existed for sessionID. An idle builder keeps its payload
 // capacity until this call or Clear.
 //
-// Call FreeSessionBuffer from the unavailable-image handler for that session.
-// Session-id reuse after an image drop must not reassemble against a stale
-// builder.
-//
-// Concurrency: invoker-only. Same goroutine as Poll and the service agent duty
-// cycle.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
 //
 // A nil receiver returns false.
 func (s *SubscriptionControlIngress) FreeSessionBuffer(sessionID int32) bool {

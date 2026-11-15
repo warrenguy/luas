@@ -337,6 +337,64 @@ func TestConductor_DoWork_lingerScheduledConcurrentLookup_race(t *testing.T) {
 	wg.Wait()
 }
 
+func TestConductor_DoWork_lingerSweepAtDeadline(t *testing.T) {
+	t.Parallel()
+
+	const lingerNs int64 = int64(time.Second)
+
+	tests := []struct {
+		name        string
+		startNs     int64
+		seedNs      int64
+		logFileName string
+	}{
+		{
+			name:        "positive deadline",
+			startNs:     12_500_000_000,
+			seedNs:      12_500_000_000,
+			logFileName: "linger-skip.log",
+		},
+		{
+			name:        "zero deadline",
+			startNs:     -lingerNs,
+			seedNs:      -1,
+			logFileName: "linger-zero-deadline.log",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			deadlineNs := tc.startNs + lingerNs
+			sweeps := 0
+			conductorInstance, nanoNs := newConductorForMutableNanoTest(
+				t,
+				func(error) {},
+				resourceMapTestEpochMs,
+			)
+			conductorInstance.SeedServiceTimestamps(tc.seedNs)
+			registry, logPath := acquireLogOnConductorRegistry(t, conductorInstance, tc.logFileName)
+			scheduleLingerForRegistryLog(t, registry, logPath, tc.startNs, lingerNs)
+			require.True(t, registry.HasScheduledLinger())
+			require.Equal(t, deadlineNs, conductor.EarliestLingerDeadlineNsForTest(registry))
+			conductorInstance.SetLingerSweepBlockerForTest(t, func() {
+				sweeps++
+			})
+
+			*nanoNs = deadlineNs - 1
+			conductorInstance.DoWork()
+			require.Zero(t, sweeps)
+			require.True(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+
+			*nanoNs = deadlineNs
+			conductorInstance.DoWork()
+			require.Equal(t, 1, sweeps)
+			require.False(t, conductor.LogBuffersRegistryContainsForTest(registry, logPath))
+		})
+	}
+}
+
 func TestConductor_DoWork_lingerScheduledConcurrentLookup_blocksDuringSweep(t *testing.T) {
 	t.Parallel()
 
@@ -362,7 +420,7 @@ func TestConductor_DoWork_lingerScheduledConcurrentLookup_blocksDuringSweep(t *t
 	registry, logPath := acquireLogOnConductorRegistry(t, conductorInstance, "linger-sweep-block.log")
 	scheduleLingerForRegistryLog(t, registry, logPath, startNs, lingerNs)
 	require.True(t, registry.HasScheduledLinger())
-	*nanoNs = startNs + lingerNs - 1
+	*nanoNs = startNs + lingerNs
 
 	// Release the sweep on failure. The conductor cleanup needs the write lock.
 	releaseBlocker := sync.OnceFunc(func() { close(releaseSweep) })

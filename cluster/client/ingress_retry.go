@@ -96,8 +96,10 @@ func ingressOfferUntilPositive(
 	startNs := clock()
 	deadlineNs, bound := aeron.RetryDeadlineNs(ctx, startNs, session.cfg.IngressRetryTimeout)
 	doTransportWork := func() {
-		aeronClient.DoWork()
-		recordIngressRetryDoWork()
+		if aeronClient.HasConductorInvoker() {
+			aeronClient.DoWork()
+			recordIngressRetryDoWork()
+		}
 	}
 	var pos int64
 	for {
@@ -123,44 +125,37 @@ func ingressOfferUntilPositive(
 	}
 }
 
-// IngressOfferUntilPositive retries offerFn on aeron.IsIngressRetriable until success,
-// timeout, or a terminal publication code.
+// IngressOfferUntilPositive retries offerFn while aeron.IsIngressRetriable
+// accepts its result. It stops on success, timeout, or a terminal code.
 //
-// Contract:
+// Behaviour:
 //
-//   - Calls session.Aeron().DoWork() before each offerFn invocation.
+//   - Before each offerFn call, calls session.Aeron().DoWork() when the client
+//     has a conductor invoker.
+//   - After a retriable code, calls PollEgress. On BackPressured, calls DoWork
+//     again under the same condition, then calls cfg.IdleStrategy.Idle(0).
+//     AdminAction retries at once without pacing, as Publication offer does.
+//   - Stops on any non-retriable code. This includes a session-guard
+//     NotConnected after PollEgress advances recovery or egress teardown.
+//   - offerFn must use app-guarded APIs (Offer, SendKeepAlive,
+//     SendSnapshotRequest). Do not wrap recovery-bypass paths such as
+//     offerSessionKeepAlive.
 //
-//   - On retriable failure, calls PollEgress(). On BackPressured, calls DoWork()
-//     again, then paces via cfg.IdleStrategy.Idle(0). AdminAction retries
-//     immediately on the next iteration (no pacing), matching Publication offer
-//     semantics.
+// Returns:
 //
-//   - Calls idle.Reset() on all exit paths (success, terminal, timeout). Nil
-//     cfg.IdleStrategy uses session Config.IdleStrategy when set; otherwise default.
+//   - The stream position (>0) and nil on success.
+//   - 0 and ctx.Err() when ctx is done before success.
+//   - 0 and IngressTerminalError or IngressTimeoutError while ctx is active.
+//   - 0 and a nil-argument error.
 //
-//   - Retry aborts on any non-retriable code, including session-guard NotConnected
-//     returned after PollEgress advances recovery or egress teardown mutates state.
+// Use single-shot Offer or SendKeepAlive when the caller needs the raw Aeron
+// status code.
 //
-//   - offerFn must use app-guarded APIs (Offer, SendKeepAlive, SendSnapshotRequest).
-//     Do not wrap recovery-bypass paths such as offerSessionKeepAlive. Single-shot
-//     methods are not modified.
+// The retry bound is Config.IngressRetryTimeout, or ctx.Deadline() when that
+// is earlier.
 //
-// Returns stream position (>0) and nil error on success. On failure returns 0 and a
-// non-nil error: IngressTerminalError, IngressTimeoutError, ctx.Err(), or a nil-argument
-// error. Returns ctx.Err() when the context is done before success (context.Canceled or
-// context.DeadlineExceeded). IngressTerminalError and IngressTimeoutError apply only
-// while the context remains active. Use single-shot Offer or SendKeepAlive when the
-// Aeron status code itself is the contract.
-//
-// Uses Config.IngressRetryTimeout. When ctx carries a deadline, the effective
-// bound is the earlier of IngressRetryTimeout and ctx.Deadline().
-//
-// Invoker-only: this helper drives DoWork on behalf of the caller for the duration
-// of the retry loop only. The application still owns the outer duty cycle
-// (PollEgress between business logic, idle keep-alive timer, etc.).
-//
-// Not zero-alloc gated: intended for idle keep-alive and integration-style sends,
-// not per-message hot paths. Single-shot Offer/SendKeepAlive remain zero-alloc clean.
+// Zero-alloc tests do not cover this method. Use it for idle keep-alive and
+// integration-style sends, not per-message hot paths.
 func (ac *AeronCluster) IngressOfferUntilPositive(
 	ctx context.Context,
 	cfg IngressOfferConfig,

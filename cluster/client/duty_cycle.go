@@ -2,17 +2,15 @@ package client
 
 import "github.com/warrenguy/luas/idlestrategy"
 
-// SpinOnce runs one duty-cycle iteration: DoWork, PollEgress, then idle pacing via
-// the session config IdleStrategy. Returns the PollEgress work count.
+// SpinOnce runs one duty-cycle iteration and returns the PollEgress work count.
 //
-// DoWork runs before PollEgress so conductor work is pumped before egress is polled.
+// SpinOnce calls DoWork when the Aeron client has a conductor invoker. It then
+// calls PollEgress and passes the work count to the config IdleStrategy.
+// SpinOnce does not call Reset.
 //
-// Idle pacing uses the PollEgress work count. Connect's await loop calls Idle(0)
-// instead. SpinOnce does not call idle.Reset().
-//
-// Nil receiver returns 0. Nil Aeron skips DoWork; PollEgress still runs (0 when
-// closed). Injected-transport sessions may keep a non-nil Aeron after Close; DoWork
-// still runs in that case.
+// Nil receiver returns 0. PollEgress returns 0 when the session is closed.
+// Injected-transport sessions may keep a non-nil Aeron after Close, so DoWork
+// can still run.
 //
 // Not safe for concurrent use on the same session.
 func (ac *AeronCluster) SpinOnce() int {
@@ -23,10 +21,11 @@ func (ac *AeronCluster) SpinOnce() int {
 }
 
 func (ac *AeronCluster) spinOnce(idle idlestrategy.IdleStrategy) int {
-	if client := ac.aeron; client != nil {
+	if client := ac.aeron; client.HasConductorInvoker() {
 		client.DoWork()
 		recordSpinOnceOp("DoWork")
 	}
+
 	recordSpinOnceOp("PollEgress")
 	work := ac.PollEgress()
 	if idle != nil {

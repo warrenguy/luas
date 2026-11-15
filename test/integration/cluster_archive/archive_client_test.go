@@ -969,3 +969,93 @@ func awaitListRecording(
 	)
 	return descriptor
 }
+
+// TestArchiveClient_backgroundTransportRecordingSignal records an IPC
+// stream on a background conductor. The test does not call DoWork.
+func TestArchiveClient_backgroundTransportRecordingSignal(t *testing.T) {
+	t.Parallel()
+
+	const streamID int32 = 4005
+
+	md := harness.Start(t)
+	harness.StartArchiveNode(t, harness.ArchiveNodeConfig{
+		AeronDir:       md.Dir,
+		ControlChannel: harness.ArchiveBackgroundRecordingControl,
+	})
+	transport := harness.ConnectBackgroundClient(t, md, aeron.Config{})
+	require.False(t, transport.HasConductorInvoker())
+
+	connect, err := archive.NewAsyncConnect(t.Context(), archive.Config{
+		ControlRequestChannel:  harness.ArchiveBackgroundRecordingControl,
+		ControlResponseChannel: "aeron:udp?endpoint=127.0.0.1:0",
+		Aeron:                  transport,
+	}.WithRemoteControl().Normalize())
+	require.NoError(t, err)
+	defer func() { _ = connect.Close() }()
+
+	var result *archive.ConnectResult
+	var pollErr error
+	harness.PollUntilBool(harness.ConnectedPollTimeout, time.Millisecond, func() bool {
+		result, pollErr = connect.Poll()
+		return result != nil || pollErr != nil
+	})
+	require.NoError(t, pollErr)
+	require.NotNil(t, result, "async connect did not complete in state %v", connect.State())
+
+	session := archive.NewClient(result)
+	harness.CleanupClose(t, "close archive session", session.Close)
+
+	// The archive emits START once the recording subscription has an image.
+	pub, err := transport.AddPublication(streamID, archiveClientRecordingChannel)
+	require.NoError(t, err)
+	harness.CleanupClose(t, "close record publication", pub.Close)
+
+	handle := session.NewAsyncStartRecording(
+		streamID,
+		archivewire.SourceLocation_LOCAL,
+		true,
+		[]byte(archiveClientRecordingChannel),
+	)
+	defer handle.Close()
+
+	offered := false
+	started := harness.PollUntilBool(harness.ConnectedPollTimeout, time.Millisecond, func() bool {
+		if !offered {
+			var offerErr error
+			offered, offerErr = handle.TryOffer()
+			require.NoError(t, offerErr)
+		}
+		_ = session.Poll()
+		done, signalErr := handle.PollSignal()
+		require.NoError(t, signalErr)
+		return done
+	})
+	require.True(t, started, "START did not arrive")
+	recordingID := handle.RecordingID()
+
+	published := harness.PollUntilBool(harness.ConnectedPollTimeout, time.Millisecond, func() bool {
+		if pub.Offer([]byte("recorded")) > 0 {
+			return true
+		}
+		_ = session.Poll()
+		return false
+	})
+	require.True(t, published, "publication did not accept the payload")
+
+	stopped := false
+	session.SetRecordingSignalHandler(archive.RecordingSignalHandlerFunc(
+		func(event codecs.RecordingSignalEventFields) {
+			if event.Signal == archivewire.RecordingSignal_STOP &&
+				event.RecordingID == recordingID {
+				stopped = true
+			}
+		},
+	))
+	require.NoError(t, pub.Close())
+
+	harness.PollUntilBool(harness.ConnectedPollTimeout, time.Millisecond, func() bool {
+		_ = session.Poll()
+		return stopped
+	})
+	require.True(t, stopped, "STOP did not arrive")
+}

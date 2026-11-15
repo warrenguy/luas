@@ -82,11 +82,16 @@ if err != nil { /* ... */ }
 log.Printf("received %q", msg)
 ```
 
-Resource poll/offer helpers above call client `DoWork` internally. Runnable one-shot
-sample: [`examples/ipc-echo`](examples/ipc-echo/).
+Connect starts a conductor goroutine. That goroutine loops on `DoWork` and
+idles between calls. The sample above uses that default. Resource helpers
+call `DoWork` only in invoker mode. Runnable one-shot sample:
+[`examples/ipc-echo`](examples/ipc-echo/).
 
-A long-running application drives the client directly: one goroutine per
-`*aeron.Client` calls `DoWork` and the poll methods, while `Publication.Offer`
+A fatal conductor error, such as a driver timeout, terminates the client.
+Set `Config.ErrorHandler` or check `Client.IsTerminating` to see it.
+
+Set `UseConductorInvoker` to true when the application runs the conductor.
+One goroutine then calls `DoWork` and the poll methods. `Publication.Offer`
 may run from other goroutines.
 
 ```go
@@ -100,7 +105,7 @@ for {
 }
 ```
 
-Runnable long-running sample (paced offer, idle, signal stop):
+Runnable invoker sample (paced offer, idle, signal stop):
 [`examples/ipc-duty-cycle`](examples/ipc-duty-cycle/).
 
 ## Cluster client
@@ -108,7 +113,10 @@ Runnable long-running sample (paced offer, idle, signal stop):
 [`cluster/client`](cluster/client/) connects to an Aeron Cluster:
 `Connect`/`AsyncConnect` handle authentication challenges and member redirects;
 sessions offer and claim ingress, poll egress with fragment assembly, and
-recover across leader changes. An external cluster stack is required:
+recover across leader changes. On a background transport, Connect,
+`SpinOnce`, and the offer helpers do not call `DoWork`. On an invoker
+transport, the session owner calls `DoWork` or `SpinOnce`. An external
+cluster stack is required:
 
 - [`examples/cluster-echo-client`](examples/cluster-echo-client/) - IPC echo
   against `test/integration/cluster_java/docker`
@@ -118,8 +126,9 @@ recover across leader changes. An external cluster stack is required:
 ## Archive client
 
 [`archive`](archive/) connects to Aeron Archive for recording control and
-replay. Pass an existing transport client in `Config.Aeron` to share one duty
-cycle:
+replay. Pass an existing transport client in `Config.Aeron` to share it.
+On a background transport the session owner polls and does not call `DoWork`.
+On an invoker transport that owner also calls `DoWork`:
 
 ```go
 import (
@@ -134,14 +143,13 @@ session, err := archive.Connect(context.Background(), archive.Config{Aeron: tran
 defer session.Close()
 
 for {
-	transport.DoWork()
 	session.Poll()
 }
 ```
 
-Blocking `Connect` and recording APIs drive `DoWork` during awaits; otherwise pump
-`transport.DoWork()` then `session.Poll()` (`Poll` never calls `DoWork`). Configure a
-recording signal handler or signals drop when control events are polled.
+Blocking connect and recording awaits call `DoWork` only on an invoker
+transport. `Poll` never calls `DoWork`. Set a recording signal handler.
+Otherwise the client drops those signals when it polls control events.
 
 ## Examples
 

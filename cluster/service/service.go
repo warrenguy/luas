@@ -99,8 +99,9 @@ type NewLeadershipTermEventHandler interface {
 // cycle.
 //
 // Concurrency: methods run inside [Agent.DoWork]. TakeSnapshot blocks the
-// duty cycle. The agent does not pump the transport client meanwhile. A run
-// past the transport client's InterServiceTimeout terminates that client.
+// duty cycle. In invoker mode, the caller cannot run the transport client's
+// DoWork meanwhile. A run past that client's InterServiceTimeout terminates
+// it.
 type TakeSnapshotHandler interface {
 	TakeSnapshot(publication *aeron.ExclusivePublication) error
 }
@@ -119,9 +120,9 @@ type TakeSnapshotHandler interface {
 // A non-nil error fails Open.
 //
 // Concurrency: LoadSnapshot runs on the goroutine that calls Open. The
-// call returns before the first DoWork, so before Start. Nothing pumps the
-// transport client meanwhile. A run past the transport client's
-// InterServiceTimeout terminates that client.
+// call returns before the first DoWork, so before Start. In invoker mode,
+// Open does not run the transport client's DoWork meanwhile. A run past that
+// client's InterServiceTimeout terminates it.
 type LoadSnapshotHandler interface {
 	LoadSnapshot(image *aeron.Image) error
 }

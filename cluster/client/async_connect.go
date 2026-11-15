@@ -50,15 +50,13 @@ func (state ConnectState) String() string {
 
 // AsyncConnect runs the non-blocking cluster connect handshake.
 //
-// Poll ticks a connect-owned transport client. With Config.Aeron set, the
-// caller ticks that client between Poll calls. OwnsAeronClient reports which
-// case applies.
+// With Config.Aeron set to an invoker-mode client, the caller calls DoWork
+// between Poll calls.
 //
 // A gap between Poll calls longer than AeronConfig.InterServiceTimeout
-// terminates a connect-owned client.
+// terminates a connect-owned invoker-mode client.
 //
-// Concurrency: Poll and Close are invoker-only. With Config.Aeron set, the
-// invoker is the duty cycle that ticks that client. Poll must not run inside
+// Concurrency: one goroutine calls Poll and Close. Poll must not run inside
 // a callback of its transport client.
 type AsyncConnect struct {
 	cfg               Config
@@ -66,8 +64,8 @@ type AsyncConnect struct {
 	ownsAeronClient   bool
 	newLeaderExplicit bool
 
-	// transportFault stores errors from the connect-owned transport client.
-	// Nil when the caller supplied Config.Aeron.
+	// transportFault reads the termination cause of a connect-owned client.
+	// It is nil when the caller supplied Config.Aeron.
 	transportFault *transportfault.Monitor
 	// transportFaultErr is the first Poll error from a terminated owned
 	// client. Later Poll calls return it.
@@ -180,8 +178,8 @@ func (ac *AsyncConnect) OwnsAeronClient() bool {
 
 // Poll advances the connect handshake by one step.
 //
-// Poll ticks a connect-owned transport client once, before the fault check.
-// Poll does not tick a caller-supplied client.
+// Poll calls DoWork once, before the fault check, on a connect-owned
+// invoker-mode client.
 //
 // Returns (nil, nil) while in progress, (*ConnectResult, nil) on success, and
 // (nil, err) on terminal failure.
@@ -190,7 +188,8 @@ func (ac *AsyncConnect) OwnsAeronClient() bool {
 // before the deadline check. The error wraps ErrTransportTerminating and the
 // conductor cause. Later Poll calls return the same error and skip the tick.
 //
-// Concurrency: invoker-only. The tick takes the transport client lock.
+// Concurrency: one goroutine calls Poll. DoWork takes the transport client
+// lock.
 func (ac *AsyncConnect) Poll() (*ConnectResult, error) {
 	if ac == nil {
 		return nil, errors.New("cluster client: nil async connect")
@@ -223,7 +222,7 @@ func (ac *AsyncConnect) Poll() (*ConnectResult, error) {
 }
 
 func (ac *AsyncConnect) tickOwnedClient() {
-	if ac.ownsAeronClient && ac.client != nil {
+	if ac.ownsAeronClient && ac.client.HasConductorInvoker() {
 		ac.client.DoWork()
 	}
 }
@@ -299,8 +298,7 @@ func (ac *AsyncConnect) Close() error {
 //
 // Behaviour:
 //   - cfg.Aeron set: returns that client with a nil monitor.
-//   - cfg.Aeron nil: wraps AeronConfig.ErrorHandler in a new monitor for the
-//     owned client. The returned Config keeps the caller ErrorHandler.
+//   - cfg.Aeron nil: connects an owned client and returns a monitor for it.
 func concludeConfig(
 	ctx context.Context,
 	cfg Config,
@@ -327,8 +325,6 @@ func concludeConfig(
 	if cfg.AeronDir != "" {
 		aeronCfg.AeronDir = cfg.AeronDir
 	}
-	monitor := &transportfault.Monitor{}
-	aeronCfg.ErrorHandler = monitor.Handler(aeronCfg.ErrorHandler)
 	if factory, ok := ownedConnectClientFactoryForConfig(cfg); ok {
 		factoryCfg := cfg
 		factoryCfg.AeronConfig = aeronCfg
@@ -340,7 +336,7 @@ func concludeConfig(
 		return Config{}, nil, false, nil, err
 	}
 	cfg.Aeron = client
-	return cfg, client, true, monitor, nil
+	return cfg, client, true, &transportfault.Monitor{}, nil
 }
 
 func (ac *AsyncConnect) checkDeadline() error {

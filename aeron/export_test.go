@@ -18,6 +18,7 @@ import (
 	"github.com/warrenguy/luas/aeron/internal/testutil"
 	"github.com/warrenguy/luas/aeron/logbuffer"
 	"github.com/warrenguy/luas/atomicbuffer"
+	"github.com/warrenguy/luas/idlestrategy"
 	"github.com/warrenguy/luas/internal/cnctest"
 	"github.com/warrenguy/luas/internal/testhook"
 	"github.com/warrenguy/luas/ringbuffer"
@@ -1228,8 +1229,8 @@ func (client *Client) SetClientCloseLingerDurationForTest(duration time.Duration
 	client.clientCloseLinger = duration
 }
 
-func (cfg Config) UseConductorInvokerEnabledForTest() bool {
-	return cfg.useConductorInvokerEnabled()
+func ConductorIdleStrategyForTest(cfg Config) idlestrategy.IdleStrategy {
+	return resolveConductorIdleStrategy(cfg)
 }
 
 func WaitForDriverHeartbeatForTest(

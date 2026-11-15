@@ -49,6 +49,16 @@ func TestSubscription_addImageRemoveImage(t *testing.T) {
 	require.Nil(t, aeron.SubscriptionRemoveImageForTest(sub, aeron.TestImageCorrelationID))
 }
 
+func TestSubscription_Images_nilAfterMarkClosed(t *testing.T) {
+	sub := testSubscription(t)
+	image := addTestImage(t, sub)
+	require.Equal(t, []*aeron.Image{image}, sub.Images())
+
+	require.NoError(t, sub.Close())
+	require.Equal(t, 1, sub.ImageCount())
+	require.Nil(t, sub.Images())
+}
+
 func TestSubscription_addImage_nilIgnored(t *testing.T) {
 	sub := testSubscription(t)
 

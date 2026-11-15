@@ -20,6 +20,13 @@ type transportAdd struct {
 	channel  string
 }
 
+// backgroundRecoveryTransport reports a background conductor.
+type backgroundRecoveryTransport struct {
+	*recoveryFakeTransport
+}
+
+func (*backgroundRecoveryTransport) HasConductorInvoker() bool { return false }
+
 // fakeTransport records AddSubscription and AddPublication. fakeTransport
 // returns hook handles. A configured error skips handle creation for that add.
 // A positive pubErrAdds limits pubErr to the first pubErrAdds publication adds.
@@ -898,37 +905,41 @@ func seedControlPendingBegin(
 	return image
 }
 
-func TestOpen_unavailableImageFreesAssembler(t *testing.T) {
+func TestOpen_recoveryPumpsOnlyInvokerTransport(t *testing.T) {
 	t.Parallel()
 
-	client, _, ingress := openWiredControl(t)
+	state := codecs.RecoveryStateKeyFields{LeadershipTermID: nullValue, LogPosition: 640}
 
-	handler := aeron.SubscriptionUnavailableImageHandlerForHooks(client.sub)
-	require.NotNil(t, handler)
+	t.Run("invoker", func(t *testing.T) {
+		t.Parallel()
 
-	image := seedControlPendingBegin(t, client.sub, ingress)
-	handler(image)
-	require.False(t, ingress.FreeSessionBuffer(image.SessionID()))
-	require.NotPanics(t, func() { handler(nil) })
+		client := newRecoveryFakeTransport(t)
+		client.pumpHook = func(int) { client.writeRecoveryState(t, state) }
 
-	// Same session id, new image: END only must not splice onto the old BEGIN.
-	endImage := aeron.NewTestImageForSubscriptionHooksWithSessionID(
-		t,
-		client.sub,
-		image.SessionID(),
-		image.CorrelationID()+1,
-		0,
-	)
-	require.True(t, aeron.SubscriptionAddImageForHooks(client.sub, endImage))
-	writeControlFragmented(t, endImage, 0, []aeron.FragmentedFrameForTest{
-		{Flags: logbuffer.EndFlag, Payload: []byte("end-only-must-not-splice")},
+		c, err := Open(recoveryOpenConfig(client, &recordingService{}))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = c.Close() })
+		require.Equal(t, 1, client.pumps)
 	})
-	var got []byte
-	n := ingress.Poll(10, func(buf []byte, _ int) {
-		got = append([]byte(nil), buf...)
+
+	t.Run("background", func(t *testing.T) {
+		t.Parallel()
+
+		client := newRecoveryFakeTransport(t)
+		client.readHook = func(reads int) {
+			if reads == 2 {
+				client.writeRecoveryState(t, state)
+			}
+		}
+		cfg := recoveryOpenConfig(client, &recordingService{})
+		cfg.Aeron = &backgroundRecoveryTransport{recoveryFakeTransport: client}
+
+		c, err := Open(cfg)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = c.Close() })
+		require.Equal(t, 2, client.reads)
+		require.Zero(t, client.pumps)
 	})
-	require.Equal(t, 1, n)
-	require.Empty(t, got)
 }
 
 func TestContainer_Close_clearsAssembler(t *testing.T) {

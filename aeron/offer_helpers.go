@@ -138,17 +138,15 @@ func offerWithRetryObserved(
 			return 0, PreferContextError(ctx, offerTerminalError(pub, result, position))
 		}
 
-		switch result {
-		case BackPressured, AdminAction:
-			if onRetriable != nil {
-				onRetriable(result)
-			}
+		if onRetriable != nil && (result == BackPressured || result == AdminAction) {
+			onRetriable(result)
+		}
+
+		if client.HasConductorInvoker() {
 			client.DoWork()
-			if result == BackPressured {
-				time.Sleep(DefaultIdleSleepDuration)
-			}
-		case NotConnected:
-			client.DoWork()
+		}
+
+		if result == BackPressured || result == NotConnected {
 			time.Sleep(DefaultIdleSleepDuration)
 		}
 	}

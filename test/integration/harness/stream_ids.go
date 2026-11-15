@@ -27,7 +27,9 @@ const (
 	ExclusivePublicationTwoClientsRoundtripStreamID int32 = 7206
 	AeronHelpersSmokeStreamID                       int32 = 8024
 	// Isolated from AeronHelpersSmokeStreamID for shared-driver cross-test safety.
-	AeronHelpersFragmentedSmokeStreamID int32 = 8025
+	AeronHelpersFragmentedSmokeStreamID     int32 = 8025
+	AeronHelpersBackgroundStreamID          int32 = 8029
+	AeronHelpersBackgroundExclusiveStreamID int32 = 8031
 
 	ConnectedWaitPublicationTimeoutStreamID  int32 = 7991
 	ConnectedWaitSubscriptionTimeoutStreamID int32 = 7994

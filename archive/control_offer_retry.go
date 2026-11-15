@@ -78,8 +78,10 @@ func controlOfferUntilPositive(
 	deadlineNs, bound := aeron.RetryDeadlineNs(ctx, startNs, timeout)
 	defer idle.Reset()
 	doTransportWork := func() error {
-		aeronClient.DoWork()
-		recordControlOfferRetryDoWork(aeronClient)
+		if aeronClient.HasConductorInvoker() {
+			aeronClient.DoWork()
+			recordControlOfferRetryDoWork(aeronClient)
+		}
 
 		return checkTransportFault(ctx, aeronClient, offerCfg.transportFault)
 	}
@@ -130,8 +132,9 @@ func controlOfferUntilPositive(
 // success, timeout, the attempt cap, a terminal publication code, or a
 // transport fault.
 //
-// Calls the session's Aeron client DoWork() before each offerFn call. Calls
-// cfg.PollFn after a retriable code below the attempt cap.
+// Calls the session's Aeron client DoWork() before each offerFn call when
+// that client has a conductor invoker.
+// Calls cfg.PollFn after a retriable code below the attempt cap.
 //
 // Returns:
 //

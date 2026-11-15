@@ -430,6 +430,28 @@ func assertOtherRegistryRapidKeysUnchanged(
 	}
 }
 
+func assertRegistryRapidEarliestDeadline(
+	rt *rapid.T,
+	registry *conductor.LogBuffersRegistry,
+	models ...registryRapidModel,
+) {
+	rt.Helper()
+
+	var earliest int64
+	seen := false
+
+	for _, model := range models {
+		for _, mapping := range model.lingering {
+			if !seen || mapping.deadlineNs < earliest {
+				earliest = mapping.deadlineNs
+				seen = true
+			}
+		}
+	}
+
+	require.Equal(rt, earliest, conductor.EarliestLingerDeadlineNsForTest(registry))
+}
+
 func assertRegistryRapidLingerTotal(
 	rt *rapid.T,
 	registry *conductor.LogBuffersRegistry,
@@ -438,10 +460,15 @@ func assertRegistryRapidLingerTotal(
 	rt.Helper()
 
 	total := 0
-	for _, state := range states {
+	models := make([]registryRapidModel, len(states))
+
+	for i, state := range states {
 		total += len(state.model.lingering)
+		models[i] = state.model
 	}
+
 	require.Equal(rt, total, conductor.LogBuffersRegistryCountScheduledLingersForTest(registry))
+	assertRegistryRapidEarliestDeadline(rt, registry, models...)
 }
 
 func TestLogBuffersRegistry_acquireReleaseLinger_invariants_rapid(t *testing.T) {
@@ -462,6 +489,7 @@ func TestLogBuffersRegistry_acquireReleaseLinger_invariants_rapid(t *testing.T) 
 				model:    &model,
 			}, op, step)
 			assertRegistryRapidInvariants(rt, registry, state.logPath, model, true)
+			assertRegistryRapidEarliestDeadline(rt, registry, model)
 		}
 	})
 }
@@ -490,6 +518,7 @@ func TestLogBuffersRegistry_closePublicationLinger_invariants_rapid(t *testing.T
 				publicationInMap: &publicationInMap,
 			}, op, step)
 			assertRegistryRapidInvariants(rt, fixture.registry, fixture.state.logPath, model, false)
+			assertRegistryRapidEarliestDeadline(rt, fixture.registry, model)
 		}
 	})
 }
@@ -518,6 +547,7 @@ func TestLogBuffersRegistry_multiKeyIsolation_rapid(t *testing.T) {
 			if op == registryRapidOpUnmapLingering {
 				sweepAllRegistryRapidKeys(rt, registry, states, math.MaxInt64)
 				require.False(rt, registry.HasScheduledLinger())
+				assertRegistryRapidLingerTotal(rt, registry, states)
 				continue
 			}
 
@@ -560,6 +590,7 @@ func TestLogBuffersRegistry_unmapper_invariants_rapid(t *testing.T) {
 			if op == registryRapidOpStopUnmapper {
 				conductor.StopLogBuffersRegistryUnmapperForTest(registry)
 				assertRegistryRapidInvariants(rt, registry, state.logPath, model, true)
+				assertRegistryRapidEarliestDeadline(rt, registry, model)
 				continue
 			}
 
@@ -570,9 +601,11 @@ func TestLogBuffersRegistry_unmapper_invariants_rapid(t *testing.T) {
 				model:    &model,
 			}, op, step)
 			assertRegistryRapidInvariants(rt, registry, state.logPath, model, false)
+			assertRegistryRapidEarliestDeadline(rt, registry, model)
 		}
 
 		conductor.StopLogBuffersRegistryUnmapperForTest(registry)
 		assertRegistryRapidInvariants(rt, registry, state.logPath, model, true)
+		assertRegistryRapidEarliestDeadline(rt, registry, model)
 	})
 }

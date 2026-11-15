@@ -19,8 +19,8 @@ const fragmentBuilderInitMinCapacity = 4096
 // ControlledContinue because FragmentHandler has no poll action.
 //
 // Each session keeps its builder, and its payload capacity, after delivery.
-// Call [FragmentAssembler.FreeSessionBuffer] when the image for that session
-// goes away, or [FragmentAssembler.Clear], to release it.
+// Call [FragmentAssembler.FreeSessionBuffer] or [FragmentAssembler.Clear] on
+// the poll goroutine to release it. Free a session after its image closes.
 //
 // Concurrency: not safe for concurrent use. Delegate callbacks must not poll
 // the same assembler reentrantly.

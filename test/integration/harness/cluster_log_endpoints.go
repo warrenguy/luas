@@ -311,6 +311,16 @@ const (
 	ClusterSessionExtendReElectLogEndpoint = "239.255.12.55:32404"
 )
 
+// Background conductor egress endpoints. One member reserves one consensus
+// port block and one shared cluster-log multicast endpoint.
+//
+// The final octet of the group address must be odd. The driver derives the
+// multicast control address by incrementing that octet.
+const (
+	ClusterBackgroundEgressPortBase    = 32700
+	ClusterBackgroundEgressLogEndpoint = "239.255.12.113:32704"
+)
+
 // Multi-service, session-transfer, and service-transfer live-scenario
 // endpoints. Each pair reserves one three-member consensus port block and one
 // shared cluster-log multicast endpoint. The three scenarios are separate so
@@ -383,7 +393,8 @@ const (
 //
 // Member counts for reserved unicast ranges:
 //   - consensus, runner, runner archive loss, runner member service,
-//     runner service start failure, service snapshot, and module snapshot:
+//     runner service start failure, service snapshot, module snapshot,
+//     and background egress:
 //     one member (base+1..+5)
 //   - member-set smoke and restart affordance: two members (base+1..+105)
 //   - truncate: three members (base+1..+205)
@@ -428,6 +439,7 @@ const (
 	ArchiveReplicateSourceControlPort      = 28111
 	ArchiveReplicateDestinationControlPort = 28121
 	ArchiveClientFaultControlPort0         = 28151
+	ArchiveBackgroundRecordingControlPort  = 28161
 	ArchiveNodePairControlPort0            = 30001
 	ArchiveNodePairControlPort1            = 30101
 )
@@ -440,6 +452,7 @@ var (
 	ArchiveReplicateSourceControl      = ArchiveControlChannel(ArchiveReplicateSourceControlPort)
 	ArchiveReplicateDestinationControl = ArchiveControlChannel(ArchiveReplicateDestinationControlPort)
 	ArchiveClientFaultControl0         = ArchiveControlChannel(ArchiveClientFaultControlPort0)
+	ArchiveBackgroundRecordingControl  = ArchiveControlChannel(ArchiveBackgroundRecordingControlPort)
 	ArchiveNodePairControl0            = ArchiveControlChannel(ArchiveNodePairControlPort0)
 	ArchiveNodePairControl1            = ArchiveControlChannel(ArchiveNodePairControlPort1)
 )
@@ -870,6 +883,12 @@ func multicastPortLedger() []portLedgerBlock {
 			logEndpoint: ClusterSessionExtendReElectLogEndpoint,
 		},
 		{
+			name:        "background-egress",
+			portBase:    ClusterBackgroundEgressPortBase,
+			memberCount: 1,
+			logEndpoint: ClusterBackgroundEgressLogEndpoint,
+		},
+		{
 			name:        "multi-service",
 			portBase:    ClusterMultiServicePortBase,
 			memberCount: 3,
@@ -1021,6 +1040,7 @@ func singlePortLedger() []portLedgerSingle {
 		{name: "archive-replicate-source", port: ArchiveReplicateSourceControlPort},
 		{name: "archive-replicate-destination", port: ArchiveReplicateDestinationControlPort},
 		{name: "archive-client-fault-0", port: ArchiveClientFaultControlPort0},
+		{name: "archive-background-recording", port: ArchiveBackgroundRecordingControlPort},
 		{name: "archive-pair-0", port: ArchiveNodePairControlPort0},
 		{name: "archive-pair-1", port: ArchiveNodePairControlPort1},
 	}

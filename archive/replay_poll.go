@@ -31,18 +31,19 @@ func FindReplayImage(
 	return image, ok, nil
 }
 
-// PollReplayFragments polls up to want-received fragments on image, delivering each
-// committed fragment to handler. Returns the updated received total and done=true when
-// the total reaches want or (when stopPosition > 0) image.Position() >= stopPosition.
-// want must be positive for count-based drain. When received >= want the call completes
-// without consulting stopPosition; any non-positive want with received >= want completes
-// immediately without polling, regardless of stopPosition. Stop-position completion
-// applies only when received < want and stopPosition > 0.
+// PollReplayFragments polls up to want-received fragments on image and
+// delivers each committed fragment to handler.
 //
-// Buffer views and the header pointer follow aeron.FragmentHandler lifetime rules.
+// Returns the updated received total. done is true when that total reaches
+// want, or when stopPosition > 0 and image.Position() reaches stopPosition.
+// When received >= want on entry, the call returns done without a poll and
+// does not read stopPosition. want must be positive for a count-based drain.
 //
-// Single-step: does not call DoWork. Caller must drive client.DoWork() between
-// iterations when assembling fragments from the conductor.
+// Buffer views and the header pointer follow aeron.FragmentHandler lifetime
+// rules.
+//
+// PollReplayFragments does not call DoWork. On an invoker-mode client, the
+// caller calls DoWork between calls.
 func PollReplayFragments(
 	image *aeron.Image,
 	want int,

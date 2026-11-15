@@ -9,8 +9,8 @@ import (
 // Connect performs the blocking cluster connect handshake and returns a connected
 // AeronCluster session.
 //
-// Connect ticks a caller-supplied transport client before each
-// AsyncConnect.Poll. Poll ticks a connect-owned client.
+// Before each AsyncConnect.Poll, Connect calls DoWork on a caller-supplied
+// client in invoker mode.
 //
 // Connect loops until the handshake completes, ctx is done, or MessageTimeout
 // elapses. Each step paces with cfg.IdleStrategy.Idle(0). Connect calls
@@ -79,7 +79,7 @@ func awaitClusterConnect(
 			return nil, err
 		}
 		notifyAwaitClusterConnectStepObserver(connect)
-		if !connect.ownsAeronClient && connect.client != nil {
+		if !connect.ownsAeronClient && connect.client.HasConductorInvoker() {
 			connect.client.DoWork()
 		}
 		result, err := connect.Poll()

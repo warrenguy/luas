@@ -41,10 +41,11 @@ func main() {
 	// Must match the media driver directory; default suits local aeronmd from README.
 	aeronDir := cmp.Or(os.Getenv("AERON_DIR"), "/tmp/aeron")
 
-	// ErrorHandler runs from DoWork (must not call back into Client APIs).
-	// Log only; the invoker loop exits on IsTerminating after DoWork.
+	// UseConductorInvoker keeps DoWork on this goroutine. ErrorHandler runs
+	// inside DoWork and must not call back into Client.
 	client, err := aeron.Connect(ctx, aeron.Config{
-		AeronDir: aeronDir,
+		AeronDir:            aeronDir,
+		UseConductorInvoker: true,
 		ErrorHandler: func(err error) {
 			log.Printf("ipc-duty-cycle: aeron error: %v", err)
 		},
