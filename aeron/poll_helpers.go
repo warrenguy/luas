@@ -66,7 +66,8 @@ func PreferContextError(ctx context.Context, err error) error {
 	return err
 }
 
-// pollWorkLoop drives client.DoWork until ready is true, ctx is canceled, or deadline passes.
+// pollWorkLoop waits until ready returns true, ctx ends, or deadline passes.
+// It calls DoWork only when client.HasConductorInvoker is true.
 func pollWorkLoop(
 	ctx context.Context,
 	client *Client,
@@ -77,19 +78,27 @@ func pollWorkLoop(
 		if ready() {
 			return true, nil
 		}
+
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
+
 		if time.Now().After(deadline) {
 			return false, nil
 		}
-		client.DoWork()
-		if ready() {
-			return true, nil
+
+		if client.HasConductorInvoker() {
+			client.DoWork()
+
+			if ready() {
+				return true, nil
+			}
+
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
 		}
-		if err := ctx.Err(); err != nil {
-			return false, err
-		}
+
 		time.Sleep(DefaultIdleSleepDuration)
 	}
 }
@@ -98,36 +107,52 @@ func pollWorkLoop(
 //
 // want must be positive; non-positive want returns false.
 //
-// Iterates ImageAt, not raw ImageCount.
+// Walks one image snapshot. A closed subscription returns false.
 func SubscriptionActiveImageCountAtLeast(sub *Subscription, want int) bool {
 	if want <= 0 {
 		return false
 	}
+
+	if sub.closed.Load() {
+		return false
+	}
+
 	active := 0
-	for index := range sub.ImageCount() {
-		if _, ok := sub.ImageAt(index); ok {
-			active++
-			if active >= want {
-				return true
-			}
+
+	for _, image := range sub.imagesSnapshot() {
+		if image == nil || image.IsClosed() {
+			continue
+		}
+
+		active++
+		if active >= want {
+			return true
 		}
 	}
 	return false
 }
 
 // SubscriptionImageSummary reports active image count and a diagnostic detail string.
+//
+// Walks one image snapshot. A closed subscription with images reports
+// active=0 and the snapshot length.
 func SubscriptionImageSummary(sub *Subscription) (active int, detail string) {
-	imageCount := sub.ImageCount()
+	images := sub.imagesSnapshot()
+	imageCount := len(images)
 	if imageCount == 0 {
 		return 0, "no images"
 	}
 
+	if sub.closed.Load() {
+		return 0, fmt.Sprintf("active=0 slice=%d", imageCount)
+	}
+
 	var positions strings.Builder
-	for index := range imageCount {
-		image, ok := sub.ImageAt(index)
-		if !ok {
+	for index, image := range images {
+		if image == nil || image.IsClosed() {
 			continue
 		}
+
 		active++
 		fmt.Fprintf(
 			&positions,
@@ -138,8 +163,10 @@ func SubscriptionImageSummary(sub *Subscription) (active int, detail string) {
 			image.Position(),
 		)
 	}
+
 	if active == 0 {
 		return 0, fmt.Sprintf("active=0 slice=%d", imageCount)
 	}
+
 	return active, fmt.Sprintf("active=%d%s", active, positions.String())
 }

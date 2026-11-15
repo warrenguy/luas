@@ -7,6 +7,8 @@ package harness
 // sharedDriverStreamIDs lists every named stream ID constant in stream_ids.go consumed by parallel Shared(t) tests.
 // Regenerate via go generate -tags=integration ./test/integration/harness/.
 var sharedDriverStreamIDs = map[string]int32{
+	"AeronHelpersBackgroundExclusiveStreamID":                AeronHelpersBackgroundExclusiveStreamID,
+	"AeronHelpersBackgroundStreamID":                         AeronHelpersBackgroundStreamID,
 	"AeronHelpersFragmentedSmokeStreamID":                    AeronHelpersFragmentedSmokeStreamID,
 	"AeronHelpersSmokeStreamID":                              AeronHelpersSmokeStreamID,
 	"AssertSubscribeMetadataStreamID":                        AssertSubscribeMetadataStreamID,

@@ -20,11 +20,14 @@ const (
 	closeDrainMaxIdleTicks      = 3
 )
 
-// Client is the Aeron media driver client. The caller drives conductor work
-// with DoWork. Client does not start a conductor goroutine.
+// Client is the Aeron media driver client.
 //
-// A Client starts one goroutine when it maps its first log buffer. The
-// goroutine unmaps released log buffers. Close stops that goroutine.
+// Config.UseConductorInvoker selects the conductor mode. HasConductorInvoker
+// reports it. An application may still call DoWork on a background client.
+// That call returns 0 while the conductor goroutine holds clientLock.
+//
+// A Client starts one more goroutine when it maps its first log buffer.
+// That goroutine unmaps released log buffers. Close stops it.
 //
 // Concurrency: clientLock admits one call at a time. These calls take
 // clientLock:
@@ -32,32 +35,37 @@ const (
 //   - Add*, OfferAdd*, PollAdd*, and the destination methods
 //   - AddCounter, Counter.Close, NextAvailableSessionID, and PollCommand
 //
-// A call from another goroutine waits until the holder returns. DoWork returns
-// 0 instead of waiting. Close must not run during a blocking call. See Close.
+// A call from another goroutine waits until the holder returns. DoWork
+// returns 0 instead of waiting. See Close.
 //
-// Another goroutine may call Publication Offer when the call does not overlap
-// a blocking call. One goroutine at a time polls a Subscription and its
-// images. See [Subscription].
+// Another goroutine may call Publication Offer when the call does not
+// overlap a blocking call. One goroutine at a time polls a Subscription
+// and its images. See [Subscription].
 //
 // ErrorHandler, AvailableImageHandler, UnavailableImageHandler, and
-// PublicationErrorFrameHandler run inside DoWork or a blocking call, on the
-// goroutine that holds clientLock. ErrorHandler also runs without clientLock:
-//   - on the Close goroutine, for a resource Close on another goroutine
+// PublicationErrorFrameHandler run on the goroutine that holds clientLock.
+// In background mode, the conductor goroutine holds it between other calls.
+// ErrorHandler also runs without clientLock:
+//   - on the goroutine that calls resource Close
 //   - on the poll goroutine, for a corrupt frame or a recovered fragment
 //     handler panic
 //
-// A handler on the goroutine that holds clientLock fails fast on a call that
-// needs clientLock:
+// A handler on the goroutine that holds clientLock fails fast on a call
+// that needs clientLock:
 //   - A method with an error result returns [ErrReentrantCall].
 //   - DoWork returns 0. CancelPending returns. Each reports
 //     [ErrReentrantCall] to ErrorHandler.
 //
-// An ErrorHandler on the Close or poll goroutine does not fail fast.
-// Calls from that ErrorHandler take clientLock like any other caller.
+// An ErrorHandler on a resource Close caller or on the poll goroutine does
+// not fail fast. Calls from that ErrorHandler take clientLock like any
+// other caller.
 //
-// A handler may call IsTerminating, the lookups, offers, polls, and resource
-// Close. These calls do not take clientLock. A handler must not wait for a
-// goroutine that waits on clientLock.
+// A handler may call IsTerminating, TerminationCause, the lookups, offers,
+// polls, and resource Close. These calls do not take clientLock. A handler
+// must not wait for a goroutine that waits on clientLock or in Close.
+//
+// A background client's ErrorHandler must not panic. The conductor
+// goroutine does not recover the panic. Close waits for that goroutine.
 //
 // See AvailableImageHandler and PublicationErrorFrameHandler for their own
 // contracts.
@@ -81,6 +89,9 @@ type Client struct {
 	clientLock              sync.Mutex
 	handlerScope            handlerScope
 	closed                  atomic.Bool
+	// conductorLoopDone is closed when the conductor goroutine exits.
+	// Nil means Connect did not start that goroutine. Nothing clears it.
+	conductorLoopDone chan struct{}
 }
 
 func (client *Client) lockClient() error {
@@ -117,6 +128,12 @@ func (client *Client) unlockClient() {
 }
 
 // Connect maps CNC and builds a Client.
+//
+// When Config.UseConductorInvoker is false, a successful Connect starts
+// the conductor goroutine. A failed Connect does not start it.
+//
+// A fatal conductor error terminates the client. Set Config.ErrorHandler
+// or check [Client.IsTerminating] to see it.
 //
 // ctx bounds CNC ready and driver heartbeat waits only (earlier of
 // [Config.DriverTimeout] and ctx.Deadline()). A successful Client is independent
@@ -155,6 +172,7 @@ func Connect(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, err
 	}
 	connected = true
+	client.startConductorLoop(cfg)
 	return client, nil
 }
 
@@ -181,8 +199,14 @@ func validateConnectConfig(cfg Config) error {
 	if cfg.ClientCloseLingerDuration < 0 {
 		return errors.New("aeron: ClientCloseLingerDuration must not be negative")
 	}
-	if !cfg.useConductorInvokerEnabled() {
-		return errors.New("aeron: dedicated conductor invoker is not supported")
+	if cfg.DriverTimeout < 0 {
+		return errors.New("aeron: DriverTimeout must not be negative")
+	}
+	if cfg.IdleSleepDuration < 0 {
+		return errors.New("aeron: IdleSleepDuration must not be negative")
+	}
+	if cfg.IdleSleepDuration > maxIdleSleepDuration {
+		return errors.New("aeron: IdleSleepDuration must not exceed 1s")
 	}
 	if cfg.PollTimeout < 0 {
 		return errors.New("aeron: PollTimeout must not be negative")
@@ -349,12 +373,10 @@ func (client *Client) doWorkLocked() int {
 //   - the tick does not make progress
 //   - the caller is inside a handler
 //
-// A call from a handler reports [ErrReentrantCall] to ErrorHandler. The
-// handler call reports even after Close publishes closed. A non-handler
-// call returns 0 after Close publishes closed. A non-handler call does
-// not report.
+// Only a handler call reports [ErrReentrantCall] to ErrorHandler, even
+// after Close publishes closed.
 //
-// See Client godoc for the invoker and concurrency contract.
+// See Client for which goroutine runs DoWork.
 func (client *Client) DoWork() int {
 	if client == nil {
 		return 0
@@ -400,10 +422,42 @@ func (client *Client) IsTerminating() bool {
 	return client.terminationConductor.IsTerminating()
 }
 
+// TerminationCause returns the conductor termination cause.
+//
+// Returns nil unless IsTerminating is true. After Close, IsTerminating is
+// false, so TerminationCause returns nil.
+//
+// Concurrency: safe from any goroutine.
+func (client *Client) TerminationCause() error {
+	if !client.IsTerminating() {
+		return nil
+	}
+	return mapConductorError(client.terminationConductor.TerminationCause())
+}
+
+// HasConductorInvoker reports whether the caller runs the conductor.
+//
+// Returns false for a nil Client. The result does not change after the
+// conductor goroutine exits or after Close.
+//
+// Concurrency: safe from any goroutine.
+func (client *Client) HasConductorInvoker() bool {
+	if client == nil {
+		return false
+	}
+	return client.conductorLoopDone == nil
+}
+
 // Close closes the client resources and unmaps the CnC file. See
 // [Config.ClientCloseLingerDuration] for calls that run during Close.
 //
-// Behaviour: Close is idempotent.
+// Behaviour: Close is idempotent. A call from a handler on an open client
+// returns [ErrReentrantCall] before Close waits and before it sets closed. The
+// handler call does not close the client.
+//
+// When Connect started the conductor goroutine, the first Close waits for
+// that goroutine after it sets closed. The wait includes the tick in flight
+// and one Idle. The wait has no timeout.
 //
 // Concurrency: callers should not run Close beside another Close or a
 // blocking call. If they do:
@@ -418,8 +472,7 @@ func (client *Client) IsTerminating() bool {
 //     clientLock.
 //
 // Returns the first error from unmapping CnC. Teardown errors go to
-// ErrorHandler. A call from a handler on an open client returns
-// [ErrReentrantCall]. The handler call does not close the client.
+// ErrorHandler.
 func (client *Client) Close() error {
 	if client == nil || client.closed.Load() {
 		return nil
@@ -430,6 +483,11 @@ func (client *Client) Close() error {
 	if !client.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+
+	if done := client.conductorLoopDone; done != nil {
+		<-done
+	}
+
 	client.clientLock.Lock()
 	defer client.unlockClient()
 	return client.closeTeardownLocked()

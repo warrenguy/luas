@@ -8,7 +8,7 @@ import (
 // WaitUntilImageCount waits until at least want active images exist, or
 // [Config.PollTimeout] elapses.
 //
-// Drives client DoWork.
+// Calls client DoWork between checks in invoker mode.
 //
 // Non-positive want returns [ErrInvalidWant].
 //
@@ -43,7 +43,8 @@ func (subscription *Subscription) WaitUntilImageCount(ctx context.Context, want 
 // Does not fail fast on zero images; wait with [Subscription.WaitUntilImageCount]
 // first. Fragmented payloads need [Subscription.PollReassembled].
 //
-// Drives client DoWork under [Config.PollTimeout].
+// Waits up to [Config.PollTimeout]. Calls client DoWork between polls in
+// invoker mode.
 //
 // Returns [ErrClientNotBound] when unbound.
 func (subscription *Subscription) PollOneMessage(ctx context.Context) ([]byte, error) {
@@ -87,7 +88,8 @@ func (subscription *Subscription) PollOneMessage(ctx context.Context) ([]byte, e
 // Undersized buf returns [PollBufferTooSmallError] after the message is
 // consumed (not re-readable). Success returns payload length copied into buf.
 //
-// Drives client DoWork under [Config.PollTimeout].
+// Waits up to [Config.PollTimeout]. Calls client DoWork between polls in
+// invoker mode.
 //
 // Returns [ErrClientNotBound] when unbound.
 func (subscription *Subscription) PollReassembled(ctx context.Context, buf []byte) (int, error) {

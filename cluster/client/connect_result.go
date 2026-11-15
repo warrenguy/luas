@@ -48,7 +48,7 @@ type ConnectResult struct {
 	OwnsAeronClient bool
 	Config          Config
 
-	// transportFault stores errors from the connect-owned transport client.
-	// Nil when the caller supplied Config.Aeron.
+	// transportFault reads the termination cause of a connect-owned client.
+	// It is nil when the caller supplied Config.Aeron.
 	transportFault *transportfault.Monitor
 }

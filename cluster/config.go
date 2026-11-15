@@ -35,19 +35,22 @@ type Config struct {
 
 	// Aeron is an already-connected transport client to use instead of
 	// connecting one. Nil means connect an owned client from AeronConfig and
-	// close it at teardown; non-nil means the caller owns the lifecycle.
+	// close it at teardown. Non-nil means the caller owns the lifecycle.
 	//
-	// A harness that drives several members in one process shares its assertion
-	// client this way.
+	// A shared client must run with UseConductorInvoker true. Open rejects a
+	// client whose HasConductorInvoker reports false.
 	Aeron *aeron.Client
 
-	// AeronConfig is passed to aeron.Connect when Aeron is nil. Transport
-	// defaults are applied by aeron.Connect, not by Normalize; Normalize only
-	// bridges AeronDir into AeronConfig.AeronDir when the latter is empty.
+	// AeronConfig is passed to aeron.Connect when Aeron is nil. aeron.Connect
+	// applies transport defaults, not Normalize. Normalize only bridges
+	// AeronDir into AeronConfig.AeronDir when the latter is empty.
 	//
-	// The duty cycle is invoker-driven, so leave AeronConfig.UseConductorInvoker
-	// nil or true. Share AeronConfig.NanoClock and AeronConfig.EpochClock with
-	// the election deps when a single clock source is wanted.
+	// Open sets UseConductorInvoker true on a copy of AeronConfig, so the
+	// member duty cycle can call DoWork on the owned client. The caller's
+	// AeronConfig stays unchanged.
+	//
+	// Share AeronConfig.NanoClock and AeronConfig.EpochClock with the election
+	// deps when a single clock source is wanted.
 	//
 	// AeronConfig.NanoClock must return nanoseconds since the Unix epoch. The
 	// module stamps durable TERM rows and NewLeadershipTerm from it.

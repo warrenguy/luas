@@ -20,8 +20,18 @@ import (
 )
 
 // TestSubscriptionPollBesideDoWorkLoop polls an IPC subscription while
-// another goroutine runs DoWork.
+// DoWork runs on another goroutine. The invoker case runs DoWork on a test
+// goroutine. The background case runs it on the conductor goroutine.
 func TestSubscriptionPollBesideDoWorkLoop(t *testing.T) {
+	t.Run("invoker", func(t *testing.T) {
+		subscriptionPollBesideConductor(t, false)
+	})
+	t.Run("background", func(t *testing.T) {
+		subscriptionPollBesideConductor(t, true)
+	})
+}
+
+func subscriptionPollBesideConductor(t testing.TB, background bool) {
 	md := harness.Start(t)
 
 	const (
@@ -31,30 +41,40 @@ func TestSubscriptionPollBesideDoWorkLoop(t *testing.T) {
 
 	var arrivals atomic.Int32
 	var departures atomic.Int32
-	subClient, subErr := harness.ConnectIPCClientConfig(t, md, aeron.Config{
-		UseConductorInvoker: new(true),
+	var subHadErr atomic.Bool
+	subCfg := aeron.Config{
 		AvailableImageHandler: func(*aeron.Image) {
 			arrivals.Add(1)
 		},
 		UnavailableImageHandler: func(*aeron.Image) {
 			departures.Add(1)
 		},
-	})
+		ErrorHandler: func(error) {
+			subHadErr.Store(true)
+		},
+	}
+	var subClient *aeron.Client
+	if background {
+		subClient = harness.ConnectBackgroundClient(t, md, subCfg)
+	} else {
+		subClient = harness.ConnectClient(t, md, subCfg)
+	}
 
 	pubClient, pubErr := harness.ConnectIPCClientConfig(t, md, aeron.Config{
-		UseConductorInvoker:    new(true),
 		ResourceLingerDuration: new(time.Duration(0)),
 	})
 
-	var workWG sync.WaitGroup
-	workWG.Go(func() {
-		for t.Context().Err() == nil {
-			if subClient.DoWork() == 0 {
-				time.Sleep(aeron.DefaultIdleSleepDuration)
+	if !background {
+		var workWG sync.WaitGroup
+		workWG.Go(func() {
+			for t.Context().Err() == nil {
+				if subClient.DoWork() == 0 {
+					time.Sleep(aeron.DefaultIdleSleepDuration)
+				}
 			}
-		}
-	})
-	t.Cleanup(workWG.Wait)
+		})
+		t.Cleanup(workWG.Wait)
+	}
 
 	sub, err := subClient.AddSubscription(streamID, harness.IPCChannel)
 	require.NoError(t, err)
@@ -102,7 +122,7 @@ poll:
 	require.Equal(t, payloads, log.snapshot())
 	require.Equal(t, int32(cycles), arrivals.Load())
 	require.Equal(t, int32(cycles), departures.Load())
-	require.False(t, subErr.Load())
+	require.False(t, subHadErr.Load())
 	require.False(t, pubErr.Load())
 	md.AssertProcessAlive(t)
 }

@@ -88,8 +88,8 @@ func runDutyCycle(
 	config Config,
 	clientState *ClientState,
 ) error {
-	// Loop until all bids are sent: offer on a random schedule, keepalive between
-	// bids, pump transport and poll egress each turn.
+	// Loop until all bids are sent. Offer bids on a random schedule and send
+	// keepalive between bids. The background conductor drives the transport.
 	offerConfig := client.IngressOfferConfig{}
 	clientState.nextBidDeadline = time.Now().Add(randomDelayMs(config.BidIntervalMs))
 	clientState.bidsLeftToSend = config.NumBids
@@ -138,7 +138,7 @@ func runDutyCycle(
 			clientState.keepAliveDeadline = time.Now().Add(time.Second)
 		}
 
-		// Pump transport and poll egress once; yield when nothing arrived.
+		// Poll egress once. Yield when nothing arrived.
 		session.SpinOnce()
 	}
 

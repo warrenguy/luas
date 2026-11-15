@@ -2,6 +2,7 @@
 
 Long-running IPC pub/sub driven by an explicit invoker loop: `Client.DoWork`,
 `Publication.Offer`, and `Subscription.Poll` (no resource wait/offer helpers).
+`Config.UseConductorInvoker` makes `DoWork` run the conductor on the loop goroutine.
 Offers a sequenced payload about once per second until Ctrl-C / SIGTERM or
 media-driver loss (`IsTerminating` after `DoWork`; `ErrorHandler` logs faults).
 

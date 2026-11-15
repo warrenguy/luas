@@ -66,10 +66,7 @@ func drawPartialConfig(t *rapid.T) (
 		}
 	}
 
-	if rapid.Bool().Draw(t, "use_conductor_invoker") {
-		enabled := rapid.Bool().Draw(t, "conductor_invoker_enabled")
-		cfg.UseConductorInvoker = &enabled
-	}
+	cfg.UseConductorInvoker = rapid.Bool().Draw(t, "use_conductor_invoker")
 
 	return cfg, epochMs, nanoNs, customEpoch, customNano
 }

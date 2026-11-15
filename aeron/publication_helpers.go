@@ -7,7 +7,7 @@ import (
 
 // WaitUntilConnected waits until IsConnected or [Config.PollTimeout].
 //
-// Drives client DoWork.
+// Calls client DoWork between checks in invoker mode.
 //
 // Returns [ErrClientNotBound] when unbound.
 func (pub *Publication) WaitUntilConnected(ctx context.Context) error {
@@ -28,7 +28,8 @@ func (pub *Publication) OfferWithRetry(
 // OfferWithRetryObserved offers payload until success (position > 0), timeout,
 // stall, or terminal code.
 //
-// Drives client DoWork under [Config.PublicationOfferTimeout].
+// Retries up to [Config.PublicationOfferTimeout]. Calls client DoWork
+// between offers in invoker mode.
 //
 // Retries while [IsOfferRetriable]: BackPressured, AdminAction, NotConnected.
 // Sleeps [DefaultIdleSleepDuration] on BackPressured and NotConnected.

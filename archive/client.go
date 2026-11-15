@@ -17,6 +17,9 @@ import (
 //
 // Poll never polls the underlying pollers directly and never calls DoWork.
 //
+// On an invoker-mode transport client, the session goroutine also calls
+// DoWork.
+//
 // Recording signals drop while Client does not hold a session handler, an
 // open AsyncStartRecording, or an open AsyncExtendRecording.
 // Config.RecordingSignalHandler or SetRecordingSignalHandler sets the session
@@ -68,8 +71,8 @@ type Client struct {
 	cfg                 Config
 	closed              bool
 
-	// transportFault stores errors from the Connect-owned transport client.
-	// Nil when the caller supplied Config.Aeron.
+	// transportFault reads the termination cause of a connect-owned client.
+	// It is nil when the caller supplied Config.Aeron.
 	transportFault *transportfault.Monitor
 
 	// transportFaultCause is the error that closed the session on a transport
@@ -80,8 +83,8 @@ type Client struct {
 // Connect performs the blocking archive control connect handshake and returns a session
 // wrapper.
 //
-// Connect calls DoWork on a caller-supplied transport client before each
-// AsyncConnect.Poll. Poll ticks a connect-owned client.
+// Connect calls DoWork on a caller-supplied invoker-mode transport client
+// before each AsyncConnect.Poll.
 //
 // Connect loops until the handshake completes, ctx is done, or ConnectTimeout
 // elapses. Each step paces with cfg.IdleStrategy.Idle(0). Connect calls
@@ -131,7 +134,7 @@ func awaitConnect(ctx context.Context, connect *AsyncConnect) (*ConnectResult, e
 			return nil, err
 		}
 		notifyAwaitConnectStepObserver(connect)
-		if !connect.ownsAeronClient && connect.client != nil {
+		if !connect.ownsAeronClient && connect.client.HasConductorInvoker() {
 			connect.client.DoWork()
 		}
 		result, err := connect.Poll()
@@ -143,6 +146,15 @@ func awaitConnect(ctx context.Context, connect *AsyncConnect) (*ConnectResult, e
 		}
 		idle.Idle(0)
 	}
+}
+
+// NewClient builds a session from a successful connect result.
+//
+// AsyncConnect.Poll moves the control handles into result. NewClient moves
+// them into the session. Close the session afterwards. Do not Close
+// AsyncConnect after Poll returns a result. A nil result panics.
+func NewClient(result *ConnectResult) *Client {
+	return newClient(result)
 }
 
 func newClient(result *ConnectResult) *Client {

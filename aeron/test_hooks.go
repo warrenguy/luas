@@ -19,6 +19,7 @@ import (
 	"github.com/warrenguy/luas/aeron/internal/testutil"
 	"github.com/warrenguy/luas/aeron/logbuffer"
 	"github.com/warrenguy/luas/atomicbuffer"
+	"github.com/warrenguy/luas/idlestrategy"
 	"github.com/warrenguy/luas/record"
 )
 
@@ -748,6 +749,41 @@ func newTestHookCountersReaderWithLimit(
 			)
 		},
 	)
+}
+
+// NewStartedBackgroundClientForTest returns a fixture client with the
+// conductor loop running. The client has no counters reader. Close joins
+// the loop.
+func NewStartedBackgroundClientForTest(tb testing.TB) *Client {
+	tb.Helper()
+
+	fixture := testutil.NewConductorFixture(tb, testutil.DefaultConductorConfig(nil))
+	client := NewTestClientFromConductorFixture(tb, fixture)
+	StartBackgroundConductorForTest(client, nil)
+	return client
+}
+
+// StartBackgroundConductorForTest starts the conductor loop on a fixture
+// client. A nil strategy sleeps for the client idle sleep duration. A call
+// after the loop started does nothing.
+func StartBackgroundConductorForTest(client *Client, strategy idlestrategy.IdleStrategy) {
+	if client == nil || client.conductorLoopDone != nil {
+		return
+	}
+
+	client.startConductorLoop(Config{
+		ConductorIdleStrategy: strategy,
+		IdleSleepDuration:     client.idleSleepDuration,
+	})
+}
+
+// ConductorLoopDoneForTest returns the channel the conductor loop closes
+// on exit. Nil means the loop was not started.
+func ConductorLoopDoneForTest(client *Client) <-chan struct{} {
+	if client == nil {
+		return nil
+	}
+	return client.conductorLoopDone
 }
 
 // NewTestClientFromConductorFixture builds a transport client wired to a synthetic

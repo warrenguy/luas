@@ -16,10 +16,9 @@ import (
 //
 // Normalize before ValidateForConnect and before connect.
 //
-// With Aeron set, the caller must call DoWork on that client between idle or
-// backoff steps, both during AsyncConnect.Poll and after connect. With Aeron
-// nil, Poll ticks the connect-owned client until connect completes. After
-// that, the caller ticks ConnectResult.Aeron.
+// Connect and the session call DoWork on Aeron only in invoker mode. With
+// an invoker client, the caller calls DoWork between idle steps, during
+// AsyncConnect.Poll and after connect.
 //
 // There is no AgentInvoker field.
 type Config struct {
@@ -77,11 +76,11 @@ type Config struct {
 	// Aeron is nil.
 	//
 	// Behaviour:
-	//   - connect wraps ErrorHandler on the owned client. The wrapper stores
-	//     each error, then calls ErrorHandler.
 	//   - A nil ErrorHandler drops errors that leave the owned client running.
 	//   - A fault that terminates the owned client closes the session on the
 	//     next poll or blocking call. Client.TransportFault returns the cause.
+	//   - Every owned client shares the ConductorIdleStrategy instance. Leave
+	//     it nil when the Config opens more than one session.
 	AeronConfig aeron.Config
 
 	CredentialsSupplier CredentialsSupplier
@@ -278,8 +277,7 @@ func archiveAeronDir(cfg Config) string {
 //
 // Behaviour:
 //   - cfg.Aeron set: returns that client with a nil monitor.
-//   - cfg.Aeron nil: wraps AeronConfig.ErrorHandler in a new monitor for the
-//     owned client. The returned Config keeps the caller ErrorHandler.
+//   - cfg.Aeron nil: returns the owned client and a monitor for it.
 func concludeConfig(
 	ctx context.Context,
 	cfg Config,
@@ -304,8 +302,6 @@ func concludeConfig(
 	if dir := archiveAeronDir(cfg); dir != "" {
 		aeronCfg.AeronDir = dir
 	}
-	monitor := &transportfault.Monitor{}
-	aeronCfg.ErrorHandler = monitor.Handler(aeronCfg.ErrorHandler)
 	var client *aeron.Client
 	if factory, ok := ownedConnectClientFactoryForConfig(cfg); ok {
 		factoryCfg := cfg
@@ -318,5 +314,5 @@ func concludeConfig(
 		return Config{}, nil, false, nil, err
 	}
 	cfg.Aeron = client
-	return cfg, client, true, monitor, nil
+	return cfg, client, true, &transportfault.Monitor{}, nil
 }

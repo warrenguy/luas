@@ -109,10 +109,12 @@ type Config struct {
 	// add the log subscription at join time. The agent adds snapshot
 	// publications and response publications through Aeron.
 	//
+	// Aeron may run in either conductor mode. With the invoker, Open calls
+	// DoWork on Aeron while it waits for the archive connect or the recovery
+	// state. Call Open on the goroutine that runs DoWork.
+	//
 	// With Archive set, Aeron must be an *aeron.Client. The archive client
-	// shares Aeron. Open then calls DoWork on Aeron until the archive connect
-	// completes. With Recovery set, Open also calls DoWork on Aeron during
-	// each recovery wait. Call Open on the goroutine that runs DoWork.
+	// shares Aeron.
 	//
 	// Close the container before Aeron. A closed Aeron is not terminating.
 	// The agent then marks only when an ack offer or an add fails.
@@ -258,10 +260,9 @@ type StartAckConfig struct {
 //  9. with a snapshot recording in the recovery state, load the snapshot
 //
 // Behaviour: Open registers the two adds. With Archive set, Open then
-// connects the archive client. The connect pumps the transport client for up
-// to the archive ConnectTimeout. Without Recovery, Open does not wait for a
-// consensus module. An unavailable image frees that session's reassembly
-// builder.
+// connects the archive client. The connect waits up to the archive
+// ConnectTimeout. Without Recovery, Open does not wait for a consensus
+// module.
 //
 // The snapshot load restores the client sessions, the time unit, and the app
 // version. The load then calls [LoadSnapshotHandler.LoadSnapshot] when the
@@ -278,7 +279,7 @@ type StartAckConfig struct {
 //   - the snapshot load fails
 //
 // Open repeats the offer while the offer code is retriable, up to
-// Recovery.Timeout. Open pumps the transport client between offers. Open
+// Recovery.Timeout. Open pumps an invoker transport between offers. Open
 // then tears down. Open does not send the ack when:
 //   - the recovery wait fails
 //   - the key does not decode
@@ -403,11 +404,6 @@ func openWithArchiveConnect(cfg Config, connect archiveConnector) (*Container, e
 	proxy := NewConsensusModuleProxy()
 	proxy.SetPublication(pub)
 	ingress := NewSubscriptionControlIngress(sub)
-	sub.SetUnavailableImageHandler(func(image *aeron.Image) {
-		if image != nil {
-			ingress.FreeSessionBuffer(image.SessionID())
-		}
-	})
 
 	agent := NewAgent(AgentConfig{
 		ServiceID:         cfg.ServiceID,
@@ -446,7 +442,7 @@ func openWithArchiveConnect(cfg Config, connect archiveConnector) (*Container, e
 	load := snapshotLoad{
 		control:       replay,
 		subscriptions: cfg.Aeron,
-		pump:          transport.DoWork,
+		pump:          transportPump(transport),
 		channel:       cfg.Recovery.ReplayChannel,
 		streamID:      cfg.Recovery.ReplayStreamID,
 		timeout:       cfg.Recovery.Timeout,
@@ -627,8 +623,8 @@ func isNilOrTypedNil(v any) bool {
 
 // Container is one assembled service host.
 //
-// Concurrency: invoker-only. Drive [Agent.DoWork] on the same goroutine as
-// the member duty cycle.
+// Concurrency: call from the goroutine that runs [Agent.DoWork]. Not safe from
+// other goroutines.
 //
 // Lifetime: [Open] returns a ready container. [Container.Close] tears the
 // container down.

@@ -145,6 +145,13 @@ func SweepLingeringLogBuffersForTest(registry *LogBuffersRegistry, nowNs int64) 
 	return registry.SweepLingering(nowNs)
 }
 
+func EarliestLingerDeadlineNsForTest(registry *LogBuffersRegistry) int64 {
+	if registry == nil {
+		return 0
+	}
+	return registry.earliestLingerDeadline.Load()
+}
+
 func LogBuffersRegistryRefCountByResolvedKeyForTest(
 	registry *LogBuffersRegistry,
 	key string,

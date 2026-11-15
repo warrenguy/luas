@@ -83,22 +83,24 @@ func (ac *AeronCluster) trackIngressPublicationResult(result int64) {
 	}
 }
 
-// Offer prepends a SessionMessageHeader and offers payload via the leader ingress
-// publication. Offer makes one offer on ingressScratch and does not retry.
+// Offer prepends a SessionMessageHeader and offers payload on the leader
+// ingress publication. Offer makes one offer on ingressScratch and does not
+// retry.
 //
-// Call from the goroutine that runs client.DoWork. That goroutine must call
-// client.DoWork between spins and re-invoke on BackPressured or AdminAction.
-// Returns aeron publication status codes. The hot path does not return a Go error.
+// On BackPressured or AdminAction, call SpinOnce, then call Offer again.
 //
-// EncodeIngressHeader failure maps to NotConnected. Construction sizes
-// ingressScratch, so encode cannot fail on valid session state. Exclusive publications
-// return UnsupportedMessageLength when header+payload exceeds maxPayloadLength;
-// concurrent publications may fragment larger totals via OfferWithOffset.
+// Returns an Aeron publication status code. The hot path does not return a Go
+// error.
+//
+// Exclusive publications return UnsupportedMessageLength when header plus
+// payload exceeds maxPayloadLength. Concurrent publications may fragment
+// larger totals via OfferWithOffset.
 //
 // Header plus payload above MaxMessageLength on a concurrent ingress returns
-// UnsupportedMessageLength without an offer or state change. Publication-returned
-// MaxPositionExceeded enters PENDING_CLOSE via trackIngressPublicationResult;
-// PollEgress completes Close() via pollStateChanges.
+// UnsupportedMessageLength without an offer or state change. A
+// MaxPositionExceeded result moves the session to PENDING_CLOSE through
+// trackIngressPublicationResult. PollEgress then completes Close through
+// pollStateChanges.
 //
 // For paced retry, see IngressOfferUntilPositive (ingress_retry.go).
 func (ac *AeronCluster) Offer(payload []byte) int64 {
@@ -296,22 +298,22 @@ func (ac *AeronCluster) offerSessionKeepAlive(pub IngressPublication) int64 {
 	})
 }
 
-// SendKeepAlive offers one SessionKeepAlive control frame via leader ingress.
-// Java sendKeepAlive retries tryClaim in a bounded loop; Luas offers once and does
-// not retry.
+// SendKeepAlive offers one SessionKeepAlive control frame on the leader
+// ingress. SendKeepAlive offers once and does not retry.
 //
-// Call from the goroutine that runs client.DoWork. That goroutine must call
-// client.DoWork between spins and re-invoke on BackPressured or AdminAction.
+// On BackPressured or AdminAction, call SpinOnce, then call SendKeepAlive
+// again.
 //
-// Returns the publication stream position on success (>0) or Aeron publication
-// status codes on failure. The hot path does not return a Go error. Session-guard codes
-// (Closed, blocked NotConnected) return without tracking. When CONNECTED with a
-// disconnected ingress publication, returns NotConnected and tracks via
-// leaderIngressPublication, same as Offer and TryClaim.
+// Returns the publication stream position on success (>0). Returns an Aeron
+// publication status code on failure. The hot path does not return a Go
+// error. Session guards return Closed and blocked NotConnected without
+// tracking. When CONNECTED with a disconnected ingress publication, returns
+// NotConnected. leaderIngressPublication tracks that result, same as Offer
+// and TryClaim.
 //
-// During leadership transition keep-alive may fail; keep calling PollEgress with
-// DoWork between spins. pollLeaderRecovery sends recovery keep-alives. This method
-// does not.
+// During a leadership transition the keep-alive may fail. Keep calling
+// SpinOnce between attempts. pollLeaderRecovery sends recovery keep-alives.
+// SendKeepAlive does not.
 //
 // For paced retry, see SendKeepAliveUntilPositive (ingress_retry.go).
 func (ac *AeronCluster) SendKeepAlive() int64 {
@@ -343,29 +345,26 @@ func (ac *AeronCluster) offerSnapshotRequest(
 
 // SendSnapshotRequest offers one AdminRequest (template 26, SNAPSHOT, empty
 // payload) on the leader ingress publication. Java equivalent:
-// AeronCluster.sendAdminRequestToTakeASnapshot; Luas offers once on
-// controlScratch. Requires elevated cluster privileges; the consensus module may
+// AeronCluster.sendAdminRequestToTakeASnapshot. SendSnapshotRequest makes one
+// offer on controlScratch and does not retry.
+//
+// The request needs elevated cluster privileges. The consensus module may
 // respond with AdminResponseCode_UNAUTHORISED_ACCESS.
 //
 // The caller supplies correlationID. Egress AdminResponse echoes it. Use
-// Aeron().NextCorrelationID() or an application sequence; the client does not
-// allocate or track correlation ids for admin.
+// Aeron().NextCorrelationID or an application sequence. The client does not
+// allocate or track admin correlation ids.
 //
-// Returns publication stream position on success (>0) or Aeron publication status
-// codes on failure (BackPressured, NotConnected, Closed, etc.). The hot path does
-// not return a Go error. Session-guard codes (Closed, blocked NotConnected) return without
-// tracking. When CONNECTED with a disconnected ingress publication, returns
-// NotConnected and tracks via leaderIngressPublication, same as Offer and
-// SendKeepAlive.
+// On BackPressured or AdminAction, call SpinOnce, then call
+// SendSnapshotRequest again.
 //
-// Makes one offer and does not retry. Call from the goroutine that runs
-// Aeron().DoWork(). That goroutine must call Aeron().DoWork() between spins and
-// re-invoke on BackPressured or AdminAction.
+// Returns as SendKeepAlive does.
 //
-// During leadership transition admin may fail; keep calling PollEgress with DoWork
-// between spins. Only SessionStateConnected with connected leader ingress proceeds.
+// During a leadership transition the offer may fail. Keep calling SpinOnce
+// between attempts. The offer proceeds only in SessionStateConnected with a
+// connected leader ingress.
 //
-// For paced retry, see IngressOfferUntilPositive (ingress_retry.go).
+// For paced retry, see IngressOfferUntilPositive.
 func (ac *AeronCluster) SendSnapshotRequest(correlationID int64) int64 {
 	pub, code := ac.leaderIngressForAppOffer()
 	if pub == nil {

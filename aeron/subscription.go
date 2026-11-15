@@ -1,6 +1,7 @@
 package aeron
 
 import (
+	"slices"
 	"sync/atomic"
 
 	"github.com/warrenguy/luas/aeron/cnc"
@@ -277,6 +278,23 @@ func pollImageRange(
 		}
 	}
 	return fragmentsRead
+}
+
+// Images returns a copy of the current image slice.
+//
+// Images returns nil after Close.
+//
+// Concurrency: see [Subscription].
+func (subscription *Subscription) Images() []*Image {
+	if subscription.closed.Load() {
+		return nil
+	}
+
+	images := subscription.imagesSnapshot()
+	if len(images) == 0 {
+		return nil
+	}
+	return slices.Clone(images)
 }
 
 func (subscription *Subscription) imagesSnapshot() []*Image {

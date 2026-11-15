@@ -4,9 +4,11 @@ package client
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/luas/aeron"
 	"github.com/warrenguy/luas/idlestrategy"
 )
 
@@ -19,12 +21,33 @@ func setupSpinOnceOpRecorder(t *testing.T) *egressAdapterOpLog {
 }
 
 func TestSpinOnce_doWorkBeforePollEgress(t *testing.T) {
-	ac := newAeronClusterFromConnectFixture(t, nil)
-	ops := setupSpinOnceOpRecorder(t)
+	tests := []struct {
+		name       string
+		background bool
+		want       []string
+	}{
+		{name: "invoker", want: []string{"DoWork", "PollEgress"}},
+		{name: "background", background: true, want: []string{"PollEgress"}},
+	}
 
-	ac.spinOnce(nil)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ac := newAeronClusterFromConnectFixture(t, nil)
 
-	require.Equal(t, []string{"DoWork", "PollEgress"}, ops.Ops)
+			if tc.background {
+				aeron.StartBackgroundConductorForTest(
+					ac.Aeron(),
+					idlestrategy.NewSleepingMillis(time.Nanosecond),
+				)
+				t.Cleanup(func() { _ = ac.Aeron().Close() })
+			}
+
+			ops := setupSpinOnceOpRecorder(t)
+			ac.spinOnce(nil)
+
+			require.Equal(t, tc.want, ops.Ops)
+		})
+	}
 }
 
 func TestSpinOnce_postClose(t *testing.T) {

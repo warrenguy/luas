@@ -4,10 +4,12 @@ package cluster_archive_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -526,4 +528,121 @@ func TestClusterServiceEgress_restoredSessionsReplyAcrossLeaderStop(t *testing.T
 	otherResults := sc.members[otherIndex].rec.echoResults
 	require.Equal(t, []int64{service.MockedOffer}, otherResults,
 		"follower echo results:\n%s", sc.dump())
+}
+
+// TestClusterServiceEgress_backgroundTransportSession echoes one payload
+// over a client with a background conductor. The session goroutine does not
+// call DoWork.
+func TestClusterServiceEgress_backgroundTransportSession(t *testing.T) {
+	t.Parallel()
+
+	sc := startWrappedServiceCluster(
+		t,
+		1,
+		harness.ClusterBackgroundEgressPortBase,
+		harness.ClusterBackgroundEgressLogEndpoint,
+		amendServiceMember,
+		nil,
+	)
+	for _, mem := range sc.members {
+		mem.rec.echo = true
+	}
+
+	requireServicesJoined(t, sc)
+	leader := requireSingleLeader(t, sc.set, "")
+	ingress := leader.Topology().IngressEndpoints()
+
+	md := harness.Start(t)
+	transport := harness.ConnectBackgroundClient(t, md, aeron.Config{})
+	require.False(t, transport.HasConductorInvoker())
+
+	payload := []byte("background-echo")
+	echoed := make(chan []byte, 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	sessionDone := make(chan error, 1)
+	go func() {
+		sessionDone <- runBackgroundEchoSession(t, ctx, ingress, transport, payload, echoed)
+	}()
+
+	var got []byte
+	ok := sc.set.TickUntil(durableWorkBound, func() bool {
+		select {
+		case got = <-echoed:
+			return true
+		default:
+			return false
+		}
+	})
+	cancel()
+	require.True(t, ok, "echo not received:\n%s", sc.dump())
+	require.NoError(t, <-sessionDone)
+	require.Equal(t, payload, got)
+	require.Len(t, sc.members[0].rec.echoResults, 1, sc.dump())
+	require.Positive(t, sc.members[0].rec.echoResults[0], sc.dump())
+}
+
+func runBackgroundEchoSession(
+	t testing.TB,
+	ctx context.Context,
+	ingressEndpoints string,
+	transport *aeron.Client,
+	payload []byte,
+	echoed chan<- []byte,
+) error {
+	t.Helper()
+
+	saw := false
+	session, err := client.Connect(ctx, client.Config{
+		IngressChannel:      cluster.DefaultIngressChannel,
+		IngressEndpoints:    ingressEndpoints,
+		EgressChannel:       "aeron:udp?endpoint=127.0.0.1:0",
+		Aeron:               transport,
+		MessageTimeout:      durableWorkBound,
+		IngressRetryTimeout: durableWorkBound,
+		CredentialsSupplier: fixedCredentialsSupplier{
+			credentials: []byte(sessionSmokeCredentials),
+		},
+		EgressHandler: &client.EgressHandlers{
+			MessageBytesFunc: func(_, _ int64, got []byte, _ *aeron.Header) {
+				if saw || !bytes.Equal(got, payload) {
+					return
+				}
+
+				saw = true
+				echoed <- bytes.Clone(got)
+			},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = session.Close() }()
+
+	offered := false
+	lastKeepalive := time.Now()
+	for !saw {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		if !offered {
+			position := session.Offer(payload)
+			if position > 0 {
+				offered = true
+			} else if !aeron.IsOfferRetriable(position) {
+				return fmt.Errorf("cluster offer %d", position)
+			}
+		}
+
+		session.PollEgress()
+
+		if time.Since(lastKeepalive) >= time.Second {
+			_ = session.SendKeepAlive()
+			lastKeepalive = time.Now()
+		}
+
+		time.Sleep(time.Millisecond)
+	}
+	return nil
 }

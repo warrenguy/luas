@@ -24,7 +24,24 @@ const (
 )
 
 // ConnectClient connects to md and registers client.Close on t.Cleanup.
+//
+// ConnectClient sets UseConductorInvoker, so the caller runs the conductor.
 func ConnectClient(t testing.TB, md *MediaDriver, aeronCfg aeron.Config) *aeron.Client {
+	t.Helper()
+
+	aeronCfg.UseConductorInvoker = true
+	return connectOwnedClient(t, md, aeronCfg)
+}
+
+// ConnectBackgroundClient connects to md and registers client.Close on t.Cleanup.
+func ConnectBackgroundClient(t testing.TB, md *MediaDriver, aeronCfg aeron.Config) *aeron.Client {
+	t.Helper()
+
+	aeronCfg.UseConductorInvoker = false
+	return connectOwnedClient(t, md, aeronCfg)
+}
+
+func connectOwnedClient(t testing.TB, md *MediaDriver, aeronCfg aeron.Config) *aeron.Client {
 	t.Helper()
 
 	if aeronCfg.AeronDir == "" {

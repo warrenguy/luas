@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/idlestrategy"
 )
 
 func requireIngressTerminal(tb testing.TB, err error, wantStatus int64) {
@@ -96,24 +97,46 @@ func (r *recordingIdleStrategy) Reset() {
 }
 
 func TestIngressOfferUntilPositive_backPressuredThenSuccess(t *testing.T) {
-	idle := &recordingIdleStrategy{}
-	ac, seqPub := clusterWithSequentialIngress(
-		t,
-		aeron.BackPressured,
-		aeron.BackPressured,
-		100,
-	)
-	doWorkCount := setupIngressRetryDoWorkRecorder(t)
+	tests := []struct {
+		name       string
+		background bool
+		wantDoWork int
+	}{
+		{name: "invoker", wantDoWork: 5},
+		{name: "background", background: true},
+	}
 
-	pos, err := ac.IngressOfferUntilPositive(t.Context(), IngressOfferConfig{
-		IdleStrategy: idle,
-	}, ac.SendKeepAlive)
-	require.NoError(t, err)
-	require.Positive(t, pos)
-	require.Equal(t, 3, seqPub.calls)
-	require.Equal(t, 5, *doWorkCount)
-	require.Equal(t, 2, idle.totalIdleCalls)
-	require.Equal(t, 1, idle.resetCalls)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			idle := &recordingIdleStrategy{}
+			ac, seqPub := clusterWithSequentialIngress(
+				t,
+				aeron.BackPressured,
+				aeron.BackPressured,
+				100,
+			)
+
+			if tc.background {
+				aeron.StartBackgroundConductorForTest(
+					ac.Aeron(),
+					idlestrategy.NewSleepingMillis(time.Nanosecond),
+				)
+				t.Cleanup(func() { _ = ac.Aeron().Close() })
+			}
+
+			doWorkCount := setupIngressRetryDoWorkRecorder(t)
+
+			pos, err := ac.IngressOfferUntilPositive(t.Context(), IngressOfferConfig{
+				IdleStrategy: idle,
+			}, ac.SendKeepAlive)
+			require.NoError(t, err)
+			require.Positive(t, pos)
+			require.Equal(t, 3, seqPub.calls)
+			require.Equal(t, tc.wantDoWork, *doWorkCount)
+			require.Equal(t, 2, idle.totalIdleCalls)
+			require.Equal(t, 1, idle.resetCalls)
+		})
+	}
 }
 
 func TestIngressOfferUntilPositive_immediateSuccess(t *testing.T) {

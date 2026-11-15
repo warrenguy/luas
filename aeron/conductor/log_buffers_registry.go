@@ -51,9 +51,13 @@ type LogBuffersRegistry struct {
 	lingering              []lingeringLogBuffer
 	mediaDriverDir         string
 	resolvedMediaDriverDir string
-	// lingerScheduled mirrors len(lingering). HasScheduledLinger reads it
-	// without resourceMu.
+	// lingerScheduled mirrors len(lingering). Readers load it without
+	// resourceMu.
 	lingerScheduled atomic.Int64
+	// earliestLingerDeadline holds the soonest lingering deadline, or 0 for
+	// an empty list. A scheduled deadline can also be 0, so readers check
+	// lingerScheduled first. Readers load it without resourceMu.
+	earliestLingerDeadline atomic.Int64
 	// unmapper unmaps removed entries off the caller goroutine. Nil unmaps
 	// on the caller goroutine.
 	unmapper *logBufferUnmapper
@@ -305,7 +309,33 @@ func (registry *LogBuffersRegistry) contains(logFileName string) bool {
 }
 
 func (registry *LogBuffersRegistry) storeLingerScheduled() {
-	registry.lingerScheduled.Store(int64(len(registry.lingering)))
+	count := int64(len(registry.lingering))
+	if count == 0 {
+		// Clear the count first. A reader that sees 0 skips the deadline.
+		registry.lingerScheduled.Store(0)
+		registry.earliestLingerDeadline.Store(0)
+		return
+	}
+
+	earliest := registry.lingering[0].deadlineNs
+
+	for _, lingering := range registry.lingering[1:] {
+		earliest = min(earliest, lingering.deadlineNs)
+	}
+
+	// Publish the deadline before the count. A reader that observes the
+	// count then observes this deadline.
+	registry.earliestLingerDeadline.Store(earliest)
+	registry.lingerScheduled.Store(count)
+}
+
+// isLingerSweepDue reports whether nanoClock has reached a scheduled linger
+// deadline. It reads nanoClock only when an entry lingers.
+func (registry *LogBuffersRegistry) isLingerSweepDue(nanoClock NanoClock) bool {
+	if !registry.HasScheduledLinger() {
+		return false
+	}
+	return nanoClock() >= registry.earliestLingerDeadline.Load()
 }
 
 // HasScheduledLinger reports whether any entry is awaiting linger sweep.

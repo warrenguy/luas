@@ -5,8 +5,9 @@ import (
 	"time"
 )
 
-// RunDuringClientWork runs fn on a goroutine and drives DoWork until fn returns,
-// ctx is canceled, or [Config.PollTimeout] elapses.
+// RunDuringClientWork runs fn on a goroutine and waits until fn returns, ctx
+// is canceled, or [Config.PollTimeout] elapses. It calls DoWork while it
+// waits in invoker mode.
 //
 // Timeout or cancel returns promptly without waiting for fn to exit.
 //

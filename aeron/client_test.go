@@ -11,8 +11,6 @@ import (
 )
 
 func TestConnect_validationErrors(t *testing.T) {
-	useInvoker := false
-
 	tests := []struct {
 		name        string
 		cfg         aeron.Config
@@ -90,12 +88,28 @@ func TestConnect_validationErrors(t *testing.T) {
 			wantErr: "aeron: PublicationOfferTimeout must not be negative",
 		},
 		{
-			name: "rejects dedicated conductor invoker",
+			name: "rejects negative driver timeout",
 			cfg: aeron.Config{
-				AeronDir:            "unused",
-				UseConductorInvoker: &useInvoker,
+				AeronDir:      "unused",
+				DriverTimeout: -time.Second,
 			},
-			wantErr: "aeron: dedicated conductor invoker is not supported",
+			wantErr: "aeron: DriverTimeout must not be negative",
+		},
+		{
+			name: "rejects negative idle sleep duration",
+			cfg: aeron.Config{
+				AeronDir:          "unused",
+				IdleSleepDuration: -time.Second,
+			},
+			wantErr: "aeron: IdleSleepDuration must not be negative",
+		},
+		{
+			name: "rejects idle sleep duration above one second",
+			cfg: aeron.Config{
+				AeronDir:          "unused",
+				IdleSleepDuration: time.Second + time.Nanosecond,
+			},
+			wantErr: "aeron: IdleSleepDuration must not exceed 1s",
 		},
 		{
 			name: "wait cnc ready timeout",
@@ -132,6 +146,12 @@ func TestConnect_contextCanceled(t *testing.T) {
 		DriverTimeout: time.Second,
 	})
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestConnect_zeroDriverTimeoutKeepsDefault(t *testing.T) {
+	cfg := aeron.NormalizeConfigForTest(aeron.Config{AeronDir: "unused"})
+	require.Equal(t, 10*time.Second, cfg.DriverTimeout)
+	require.NoError(t, aeron.ValidateConnectConfigForTest(cfg))
 }
 
 func TestConnect_contextDeadlineDuringCncWait(t *testing.T) {

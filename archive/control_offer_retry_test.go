@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/warrenguy/luas/aeron"
+	"github.com/warrenguy/luas/idlestrategy"
 )
 
 type sequentialOfferResultControlPublication struct {
@@ -111,9 +112,10 @@ func requireControlTimeout(tb testing.TB, err error, wantStatus int64, wantTimeo
 
 func TestControlOfferUntilPositive_backPressuredRetry(t *testing.T) {
 	cases := []struct {
-		name   string
-		cfg    func(idle *recordingControlIdleStrategy) ControlOfferConfig
-		assert func(
+		name       string
+		background bool
+		cfg        func(idle *recordingControlIdleStrategy) ControlOfferConfig
+		assert     func(
 			t *testing.T,
 			idle *recordingControlIdleStrategy,
 			doWorkCount *int,
@@ -150,6 +152,21 @@ func TestControlOfferUntilPositive_backPressuredRetry(t *testing.T) {
 				require.Equal(t, 5, *doWorkCount)
 			},
 		},
+		{
+			name:       "background_do_work_count",
+			background: true,
+			cfg: func(*recordingControlIdleStrategy) ControlOfferConfig {
+				return ControlOfferConfig{}
+			},
+			assert: func(
+				t *testing.T,
+				_ *recordingControlIdleStrategy,
+				doWorkCount *int,
+				_ *sequentialOfferResultControlPublication,
+			) {
+				require.Zero(t, *doWorkCount)
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -159,6 +176,15 @@ func TestControlOfferUntilPositive_backPressuredRetry(t *testing.T) {
 				aeron.BackPressured,
 				100,
 			)
+
+			if tc.background {
+				aeron.StartBackgroundConductorForTest(
+					harness.Client,
+					idlestrategy.NewSleepingMillis(time.Nanosecond),
+				)
+				t.Cleanup(func() { _ = harness.Client.Close() })
+			}
+
 			idle := &recordingControlIdleStrategy{}
 			doWorkCount := setupControlOfferRetryDoWorkRecorder(t, harness.Client)
 

@@ -29,13 +29,12 @@ func transportTerminatingError(monitor *transportfault.Monitor, client *aeron.Cl
 
 // AeronCluster is a connected cluster client session. Not safe for concurrent use.
 //
-// The application goroutine owns transport pumping. Use SpinOnce for the standard
-// DoWork -> PollEgress -> idle duty cycle. For paced ingress retry, use
-// IngressOfferUntilPositive or SendKeepAliveUntilPositive.
+// One goroutine runs the session. SpinOnce runs the standard duty cycle. It
+// calls DoWork only when the transport uses invoker mode. A caller that polls
+// PollEgress directly in invoker mode must call DoWork too. For paced ingress
+// retry, use IngressOfferUntilPositive or SendKeepAliveUntilPositive.
 //
-// When driving PollEgress manually, invoke client.DoWork on the transport
-// *aeron.Client between Offer/TryClaim and each poll. Callers must CommitClaim
-// or AbortClaim any in-flight TryClaim before Close.
+// Callers must CommitClaim or AbortClaim any in-flight TryClaim before Close.
 //
 // SpinOnce does not accept context. Wrap the outer duty cycle with context.Context
 // and check ctx.Err() between SpinOnce calls.
@@ -73,8 +72,8 @@ type AeronCluster struct {
 
 	egressHooks egressDispatchHooks
 
-	// transportFault stores errors from the Connect-owned transport client.
-	// Nil when the caller supplied Config.Aeron.
+	// transportFault reads the termination cause of a connect-owned client.
+	// It is nil when the caller supplied Config.Aeron.
 	transportFault *transportfault.Monitor
 
 	// transportFaultCause is the error that closed the session on a transport
@@ -413,14 +412,18 @@ func (ac *AeronCluster) pollEgressTeardownClosedImage() int {
 }
 
 func (ac *AeronCluster) tryAttachEgressImage() {
-	if ac.egressSubscription == nil {
+	sub := ac.egressSubscription
+	if sub == nil || sub.IsClosed() {
 		return
 	}
-	for i := range ac.egressSubscription.ImageCount() {
-		if image, ok := ac.egressSubscription.ImageAt(i); ok {
-			ac.egressImage = image
-			return
+
+	for _, image := range sub.Images() {
+		if image == nil || image.IsClosed() {
+			continue
 		}
+
+		ac.egressImage = image
+		return
 	}
 }
 

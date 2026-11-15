@@ -13,10 +13,9 @@ import (
 // Config holds cluster client configuration. Normalize before Validate and
 // before connect.
 //
-// With Aeron set, the caller must call DoWork on that client between idle
-// steps. This holds during AsyncConnect.Poll and in the session duty cycle.
-// With Aeron nil, AsyncConnect.Poll ticks the connect-owned client until
-// connect completes. After that, the caller ticks ConnectResult.Aeron.
+// Connect and the session call DoWork on Aeron only in invoker mode. With
+// an invoker client, the caller calls DoWork between idle steps, during
+// AsyncConnect.Poll and in the session duty cycle.
 //
 // There is no AgentInvoker field.
 type Config struct {
@@ -48,13 +47,14 @@ type Config struct {
 	// Config.Normalize.
 	//
 	// Behaviour:
-	//   - connect wraps ErrorHandler on the owned client. The wrapper stores
-	//     each error, then calls ErrorHandler.
+	//   - connect passes ErrorHandler through unchanged.
 	//   - ErrorHandler runs under the transport client lock. It must not call
 	//     Close, PollEgress or AsyncConnect.Poll on the session.
 	//   - A nil ErrorHandler drops errors that leave the owned client running.
 	//   - A fault that terminates the owned client closes the session on the
 	//     next PollEgress. AeronCluster.TransportFault returns the cause.
+	//   - Every owned client shares the ConductorIdleStrategy instance. Leave
+	//     it nil when the Config opens more than one session.
 	AeronConfig aeron.Config
 
 	// IngressExclusive nil means true (Java isIngressExclusive default).

@@ -697,14 +697,14 @@ func TestConcludeConfig_ownedClientFactory(t *testing.T) {
 			require.Same(t, owned, clientOut)
 			require.Same(t, owned, concluded.Aeron)
 
-			// Phase: the factory sees the installed handler. The returned
-			// Config keeps the caller handler.
-			require.NotNil(t, factoryHandler)
+			// Phase: the factory and the returned Config see the caller
+			// handler unchanged.
+			require.Equal(t, tc.callerHandler, factoryHandler != nil)
 			require.Equal(t, tc.callerHandler, concluded.AeronConfig.ErrorHandler != nil)
 
-			fault := errors.New("fault")
-			factoryHandler(fault)
 			if tc.callerHandler {
+				fault := errors.New("fault")
+				factoryHandler(fault)
 				require.Equal(t, []error{fault}, callerErrs)
 			}
 		})

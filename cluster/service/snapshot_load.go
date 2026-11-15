@@ -119,7 +119,7 @@ func (l snapshotLoad) load(
 	loader := newServiceSnapshotLoader(agent, logPosition)
 	deadline := time.Now().Add(l.timeout)
 	for {
-		// The conductor reports an unavailable image only on DoWork.
+		// An invoker transport reports an unavailable image only on DoWork.
 		l.pump()
 		l.control.Poll()
 		fragments := image.ControlledPoll(loader.handler, snapshotLoadFragmentLimit)

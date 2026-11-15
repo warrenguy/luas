@@ -3,10 +3,13 @@ package cluster_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/warrenguy/luas/aeron"
 	"github.com/warrenguy/luas/cluster"
+	"github.com/warrenguy/luas/idlestrategy"
 )
 
 func TestOpenConsensusModule_configErrors(t *testing.T) {
@@ -68,6 +71,29 @@ func TestOpenConsensusModule_configErrors(t *testing.T) {
 			require.ErrorContains(t, err, tt.wantErr)
 		})
 	}
+}
+
+func TestOpenConsensusModule_memberAeronConfigCopiesInvoker(t *testing.T) {
+	t.Parallel()
+
+	linger := time.Second
+	strategy := idlestrategy.NewSleepingMillis(time.Millisecond)
+	cfg := aeron.Config{
+		AeronDir:               "/tmp/aeron",
+		DriverTimeout:          3 * time.Second,
+		KeepAliveInterval:      250 * time.Millisecond,
+		IdleSleepDuration:      8 * time.Millisecond,
+		ResourceLingerDuration: &linger,
+		UseConductorInvoker:    false,
+		ConductorIdleStrategy:  strategy,
+	}
+
+	got := cluster.MemberAeronConfigForTest(cfg)
+	want := cfg
+	want.UseConductorInvoker = true
+	require.Equal(t, want, got)
+	require.Same(t, cfg.ResourceLingerDuration, got.ResourceLingerDuration)
+	require.Same(t, strategy, got.ConductorIdleStrategy)
 }
 
 func TestConsensusModule_CloseNilReceiver(t *testing.T) {

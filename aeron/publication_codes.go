@@ -66,7 +66,7 @@ func PositionCodeName(position int64) string {
 }
 
 // IsOfferRetriable reports whether position should be retried in a transport-level
-// offer retry loop that drives client.DoWork() between attempts.
+// offer retry loop.
 //
 // Retries BackPressured, AdminAction, and NotConnected (waiting for first subscriber).
 //
