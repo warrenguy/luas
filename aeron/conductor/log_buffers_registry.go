@@ -198,12 +198,19 @@ func (registry *LogBuffersRegistry) releaseResolvedKeyAt(
 		return
 	}
 
+	deadlineNs := saturatedLingerDeadlineNs(nowNs, lingerNs)
+	earliest := deadlineNs
+
+	if len(registry.lingering) > 0 {
+		earliest = min(earliest, registry.earliestLingerDeadline.Load())
+	}
+
 	registry.lingering = append(registry.lingering, lingeringLogBuffer{
 		key:        key,
 		buffers:    entry.buffers,
-		deadlineNs: saturatedLingerDeadlineNs(nowNs, lingerNs),
+		deadlineNs: deadlineNs,
 	})
-	registry.storeLingerScheduled()
+	registry.publishLingerSchedule(earliest)
 }
 
 func saturatedLingerDeadlineNs(nowNs, lingerNs int64) int64 {
@@ -246,7 +253,7 @@ func (registry *LogBuffersRegistry) SweepLingering(nowNs int64) int {
 
 	clear(registry.lingering[len(kept):])
 	registry.lingering = kept
-	registry.storeLingerScheduled()
+	registry.recomputeLingerSchedule()
 	return workCount
 }
 
@@ -308,9 +315,10 @@ func (registry *LogBuffersRegistry) contains(logFileName string) bool {
 	})
 }
 
-func (registry *LogBuffersRegistry) storeLingerScheduled() {
-	count := int64(len(registry.lingering))
-	if count == 0 {
+// recomputeLingerSchedule scans lingering for the earliest deadline. Call it
+// only after entries leave the list.
+func (registry *LogBuffersRegistry) recomputeLingerSchedule() {
+	if len(registry.lingering) == 0 {
 		// Clear the count first. A reader that sees 0 skips the deadline.
 		registry.lingerScheduled.Store(0)
 		registry.earliestLingerDeadline.Store(0)
@@ -322,11 +330,16 @@ func (registry *LogBuffersRegistry) storeLingerScheduled() {
 	for _, lingering := range registry.lingering[1:] {
 		earliest = min(earliest, lingering.deadlineNs)
 	}
+	registry.publishLingerSchedule(earliest)
+}
 
+// publishLingerSchedule stores earliest and the lingering count. The list
+// must not be empty.
+func (registry *LogBuffersRegistry) publishLingerSchedule(earliest int64) {
 	// Publish the deadline before the count. A reader that observes the
 	// count then observes this deadline.
 	registry.earliestLingerDeadline.Store(earliest)
-	registry.lingerScheduled.Store(count)
+	registry.lingerScheduled.Store(int64(len(registry.lingering)))
 }
 
 // isLingerSweepDue reports whether nanoClock has reached a scheduled linger
